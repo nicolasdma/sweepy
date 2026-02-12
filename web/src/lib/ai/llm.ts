@@ -4,7 +4,38 @@ import { jsonrepair } from 'jsonrepair'
 import type { MinimalEmailData } from '@shared/types/email'
 import type { EmailCategory, CategorizationResult, SuggestedAction } from '@shared/types/categories'
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+// --- Provider configuration ---
+// Primary: OpenAI GPT-5.1-mini (replacing deprecated GPT-4o-mini)
+// Fallback: Anthropic Claude Haiku 4.5 (via OpenAI-compatible API)
+
+interface LLMProvider {
+  name: string
+  client: OpenAI
+  model: string
+  inputCostPerMToken: number
+  outputCostPerMToken: number
+}
+
+const primaryProvider: LLMProvider = {
+  name: 'openai',
+  client: new OpenAI({ apiKey: process.env.OPENAI_API_KEY }),
+  model: 'gpt-5.1-mini',
+  inputCostPerMToken: 0.25,
+  outputCostPerMToken: 1.0,
+}
+
+const fallbackProvider: LLMProvider | null = process.env.ANTHROPIC_API_KEY
+  ? {
+      name: 'anthropic',
+      client: new OpenAI({
+        apiKey: process.env.ANTHROPIC_API_KEY,
+        baseURL: 'https://api.anthropic.com/v1/',
+      }),
+      model: 'claude-haiku-4-5-20251001',
+      inputCostPerMToken: 0.80,
+      outputCostPerMToken: 4.0,
+    }
+  : null
 
 // Zod schema for validating LLM output
 const LLMCategorySchema = z.object({
@@ -28,9 +59,11 @@ const LLMBatchResponseSchema = z.object({
   results: z.array(LLMCategorySchema),
 })
 
-// Circuit breaker state
-let consecutiveFailures = 0
-let circuitOpenUntil = 0
+// Circuit breaker state (per provider)
+const circuitState = {
+  primary: { failures: 0, openUntil: 0 },
+  fallback: { failures: 0, openUntil: 0 },
+}
 const CIRCUIT_BREAKER_THRESHOLD = 3
 const CIRCUIT_BREAKER_DURATION_MS = 60_000
 
@@ -92,72 +125,89 @@ function formatEmailForLLM(email: MinimalEmailData): string {
 }
 
 /**
- * Classify a batch of emails using GPT-4o-mini.
+ * Classify a batch of emails using LLM.
+ * Primary: GPT-5.1-mini. Fallback: Claude Haiku 4.5.
  * Includes circuit breaker, retry, and JSON repair.
  */
 export async function classifyWithLLM(
   emails: MinimalEmailData[]
 ): Promise<CategorizationResult[]> {
-  // Circuit breaker check
-  if (Date.now() < circuitOpenUntil) {
-    console.warn('[LLM] Circuit breaker open, skipping LLM classification')
-    return emails.map((e) => ({
-      emailId: e.id,
-      category: 'unknown' as EmailCategory,
-      confidence: 0,
-      source: 'llm' as const,
-      reasoning: 'LLM temporarily unavailable (circuit breaker)',
-      suggestedActions: [{ type: 'keep' as const, reason: 'Could not classify', priority: 1 }],
-    }))
-  }
-
   const emailsText = emails.map(formatEmailForLLM).join('\n\n')
   const userPrompt = `Classify these ${emails.length} emails:\n\n${emailsText}`
 
-  try {
-    const response = await callLLMWithRetry(userPrompt)
-    consecutiveFailures = 0
-
-    return response.results.map((r) => ({
-      emailId: r.emailId,
-      category: r.category,
-      confidence: r.confidence,
-      source: 'llm' as const,
-      reasoning: r.reasoning,
-      suggestedActions: getSuggestedActionsForCategory(
-        r.category,
-        emails.find((e) => e.id === r.emailId)
-      ),
-    }))
-  } catch (error) {
-    consecutiveFailures++
-    console.error(
-      `[LLM] Classification failed (${consecutiveFailures}/${CIRCUIT_BREAKER_THRESHOLD}):`,
-      error
-    )
-
-    if (consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
-      circuitOpenUntil = Date.now() + CIRCUIT_BREAKER_DURATION_MS
-      console.warn(
-        `[LLM] Circuit breaker OPEN for ${CIRCUIT_BREAKER_DURATION_MS / 1000}s`
+  // Try primary provider
+  const primaryOpen = Date.now() >= circuitState.primary.openUntil
+  if (primaryOpen) {
+    try {
+      const response = await callProviderWithRetry(primaryProvider, userPrompt)
+      circuitState.primary.failures = 0
+      return mapLLMResponse(response, emails)
+    } catch (error) {
+      circuitState.primary.failures++
+      console.error(
+        `[LLM:${primaryProvider.name}] Failed (${circuitState.primary.failures}/${CIRCUIT_BREAKER_THRESHOLD}):`,
+        error
       )
+      if (circuitState.primary.failures >= CIRCUIT_BREAKER_THRESHOLD) {
+        circuitState.primary.openUntil = Date.now() + CIRCUIT_BREAKER_DURATION_MS
+        console.warn(`[LLM:${primaryProvider.name}] Circuit breaker OPEN for 60s`)
+      }
     }
-
-    // Fallback: return unknown for all
-    return emails.map((e) => ({
-      emailId: e.id,
-      category: 'unknown' as EmailCategory,
-      confidence: 0,
-      source: 'llm' as const,
-      reasoning: 'LLM classification failed',
-      suggestedActions: [
-        { type: 'keep' as const, reason: 'Could not classify', priority: 1 },
-      ],
-    }))
   }
+
+  // Try fallback provider
+  if (fallbackProvider && Date.now() >= circuitState.fallback.openUntil) {
+    try {
+      console.log(`[LLM] Falling back to ${fallbackProvider.name}`)
+      const response = await callProviderWithRetry(fallbackProvider, userPrompt)
+      circuitState.fallback.failures = 0
+      return mapLLMResponse(response, emails)
+    } catch (error) {
+      circuitState.fallback.failures++
+      console.error(
+        `[LLM:${fallbackProvider.name}] Fallback failed (${circuitState.fallback.failures}/${CIRCUIT_BREAKER_THRESHOLD}):`,
+        error
+      )
+      if (circuitState.fallback.failures >= CIRCUIT_BREAKER_THRESHOLD) {
+        circuitState.fallback.openUntil = Date.now() + CIRCUIT_BREAKER_DURATION_MS
+        console.warn(`[LLM:${fallbackProvider.name}] Circuit breaker OPEN for 60s`)
+      }
+    }
+  }
+
+  // Both providers failed — return unknown for all
+  console.warn('[LLM] All providers failed, returning unknown for all emails')
+  return emails.map((e) => ({
+    emailId: e.id,
+    category: 'unknown' as EmailCategory,
+    confidence: 0,
+    source: 'llm' as const,
+    reasoning: 'All LLM providers unavailable',
+    suggestedActions: [
+      { type: 'keep' as const, reason: 'Could not classify', priority: 1 },
+    ],
+  }))
 }
 
-async function callLLMWithRetry(
+function mapLLMResponse(
+  response: z.infer<typeof LLMBatchResponseSchema>,
+  emails: MinimalEmailData[]
+): CategorizationResult[] {
+  return response.results.map((r) => ({
+    emailId: r.emailId,
+    category: r.category,
+    confidence: r.confidence,
+    source: 'llm' as const,
+    reasoning: r.reasoning,
+    suggestedActions: getSuggestedActionsForCategory(
+      r.category,
+      emails.find((e) => e.id === r.emailId)
+    ),
+  }))
+}
+
+async function callProviderWithRetry(
+  provider: LLMProvider,
   userPrompt: string,
   maxRetries = 2
 ): Promise<z.infer<typeof LLMBatchResponseSchema>> {
@@ -165,8 +215,8 @@ async function callLLMWithRetry(
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
+      const completion = await provider.client.chat.completions.create({
+        model: provider.model,
         temperature: 0,
         seed: 42,
         response_format: { type: 'json_object' },
@@ -189,13 +239,11 @@ async function callLLMWithRetry(
         parsed = JSON.parse(repaired)
       }
 
-      // Validate with Zod
       return LLMBatchResponseSchema.parse(parsed)
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error))
 
       if (attempt < maxRetries) {
-        // Exponential backoff: 1s, 2s
         await new Promise((r) =>
           setTimeout(r, 1000 * Math.pow(2, attempt))
         )
@@ -203,7 +251,7 @@ async function callLLMWithRetry(
     }
   }
 
-  throw lastError || new Error('LLM classification failed after retries')
+  throw lastError || new Error(`LLM ${provider.name} failed after retries`)
 }
 
 function getSuggestedActionsForCategory(
@@ -255,11 +303,16 @@ function getSuggestedActionsForCategory(
 
 /**
  * Get estimated cost of a batch classification.
+ * Uses primary provider costs by default.
  */
 export function estimateLLMCost(emailCount: number): number {
-  // GPT-4o-mini: ~$0.15/1M input tokens, ~$0.6/1M output tokens
   // Average email data: ~200 tokens input, ~50 tokens output per email
   const inputTokens = emailCount * 200 + 500 // +500 for system prompt
   const outputTokens = emailCount * 50
-  return (inputTokens * 0.15 + outputTokens * 0.6) / 1_000_000
+  const provider = primaryProvider
+  return (
+    (inputTokens * provider.inputCostPerMToken +
+      outputTokens * provider.outputCostPerMToken) /
+    1_000_000
+  )
 }
