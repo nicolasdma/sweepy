@@ -6,7 +6,7 @@ export default function HomePage() {
           Your inbox, on autopilot
         </h1>
         <p className="mx-auto mt-6 max-w-2xl text-lg text-gray-600">
-          InboxPilot uses AI to categorize your emails and suggest what to clean
+          Sweepy uses AI to categorize your emails and suggest what to clean
           up. Newsletters you never read, old promotions, expired notifications
           — identified and organized in seconds.
         </p>

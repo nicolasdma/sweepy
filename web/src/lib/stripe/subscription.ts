@@ -4,14 +4,15 @@ import { createServiceRoleClient } from '@/lib/supabase/server'
 const GRACE_PERIOD_MS = 24 * 60 * 60 * 1000 // 24 hours
 const VERIFICATION_CACHE_MS = 60 * 60 * 1000 // 1 hour
 
-// In-memory cache for subscription status (bilateral verification)
 const statusCache = new Map<string, { status: string; checkedAt: number }>()
 
 /**
  * Check if a user has an active subscription.
- * Uses bilateral verification: DB status + Stripe API check (cached 1h).
+ * If Stripe is not configured, always returns true (MVP free access).
  */
 export async function hasActiveSubscription(userId: string): Promise<boolean> {
+  if (!stripe) return true // No billing configured → free access
+
   const supabase = await createServiceRoleClient()
   const { data: profile } = await supabase
     .from('profiles')
@@ -26,7 +27,6 @@ export async function hasActiveSubscription(userId: string): Promise<boolean> {
   const { subscription_status, current_period_end, stripe_subscription_id } =
     profile
 
-  // Active or trialing → allowed
   if (
     subscription_status === 'active' ||
     subscription_status === 'trialing'
@@ -34,7 +34,6 @@ export async function hasActiveSubscription(userId: string): Promise<boolean> {
     return true
   }
 
-  // Canceled but within grace period
   if (subscription_status === 'canceled' && current_period_end) {
     const periodEnd = new Date(current_period_end).getTime()
     if (Date.now() < periodEnd + GRACE_PERIOD_MS) {
@@ -42,7 +41,6 @@ export async function hasActiveSubscription(userId: string): Promise<boolean> {
     }
   }
 
-  // Past due: bilateral verification with Stripe
   if (
     subscription_status === 'past_due' &&
     stripe_subscription_id
@@ -57,7 +55,6 @@ async function verifyWithStripe(
   userId: string,
   subscriptionId: string
 ): Promise<boolean> {
-  // Check cache
   const cached = statusCache.get(userId)
   if (cached && Date.now() - cached.checkedAt < VERIFICATION_CACHE_MS) {
     return cached.status === 'active' || cached.status === 'trialing'
@@ -74,7 +71,6 @@ async function verifyWithStripe(
       checkedAt: Date.now(),
     })
 
-    // Clean cache if too large
     if (statusCache.size > 5000) {
       const entries = [...statusCache.entries()]
       entries
@@ -86,7 +82,6 @@ async function verifyWithStripe(
     return isActive
   } catch (error) {
     console.error('[Stripe] Verification failed:', error)
-    // On error, be permissive (grace period logic)
     return true
   }
 }

@@ -4,6 +4,13 @@ import { stripe } from '@/lib/stripe/config'
 import { createServiceRoleClient } from '@/lib/supabase/server'
 
 export async function POST() {
+  if (!stripe) {
+    return NextResponse.json(
+      { error: 'Billing not configured', code: 'BILLING_DISABLED' },
+      { status: 501 }
+    )
+  }
+
   const auth = await withAuth()
   if (auth instanceof NextResponse) return auth
 

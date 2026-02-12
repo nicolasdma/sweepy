@@ -11,6 +11,13 @@ const processedEvents = new Set<string>()
 const MAX_PROCESSED_EVENTS = 10_000
 
 export async function POST(request: NextRequest) {
+  if (!stripe) {
+    return NextResponse.json(
+      { error: 'Billing not configured' },
+      { status: 501 }
+    )
+  }
+
   const body = await request.text()
   const signature = request.headers.get('stripe-signature')
 

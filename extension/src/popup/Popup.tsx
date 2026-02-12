@@ -4,8 +4,8 @@ export function Popup() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
 
   useEffect(() => {
-    chrome.storage.session.get('inboxpilot:token', (result) => {
-      setIsAuthenticated(!!result['inboxpilot:token'])
+    chrome.storage.session.get('sweepy:token', (result) => {
+      setIsAuthenticated(!!result['sweepy:token'])
     })
   }, [])
 
@@ -19,7 +19,7 @@ export function Popup() {
 
   return (
     <div className="w-72 bg-white p-4">
-      <h1 className="mb-2 text-lg font-bold text-gray-900">InboxPilot</h1>
+      <h1 className="mb-2 text-lg font-bold text-gray-900">Sweepy</h1>
 
       {!isAuthenticated ? (
         <div>
@@ -42,7 +42,7 @@ export function Popup() {
             onClick={handleOpenSidePanel}
             className="w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
           >
-            Open InboxPilot
+            Open Sweepy
           </button>
         </div>
       )}

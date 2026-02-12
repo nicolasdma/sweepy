@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "InboxPilot — AI Email Manager",
+  "name": "Sweepy — AI Email Manager",
   "version": "0.1.0",
   "description": "AI-powered email categorization and inbox cleanup for Gmail",
   "permissions": ["storage", "sidePanel", "activeTab", "scripting"],
@@ -22,7 +22,7 @@
   },
   "action": {
     "default_popup": "src/popup/index.html",
-    "default_title": "InboxPilot"
+    "default_title": "Sweepy"
   },
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"

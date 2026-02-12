@@ -9,7 +9,7 @@ const EXTENSION_VERSION = chrome.runtime.getManifest().version
 // Listen for messages from MAIN world (via window.postMessage)
 window.addEventListener('message', (event) => {
   if (event.source !== window) return
-  if (event.data?.source !== 'inboxpilot-main') return
+  if (event.data?.source !== 'sweepy-main') return
 
   const message = event.data
 
@@ -21,7 +21,7 @@ window.addEventListener('message', (event) => {
       version: EXTENSION_VERSION,
     })
     .catch((error) => {
-      console.error('[InboxPilot:Isolated] Failed to forward message:', error)
+      console.error('[Sweepy:Isolated] Failed to forward message:', error)
     })
 })
 
@@ -31,7 +31,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     window.postMessage(
       {
         ...message,
-        source: 'inboxpilot-isolated',
+        source: 'sweepy-isolated',
       },
       '*'
     )
@@ -55,4 +55,4 @@ if (document.readyState === 'loading') {
   injectMainWorldScript()
 }
 
-console.log('[InboxPilot:Isolated] Content script loaded')
+console.log('[Sweepy:Isolated] Content script loaded')

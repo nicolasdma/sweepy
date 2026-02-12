@@ -22,7 +22,7 @@ export default async function DashboardLayout({
           <div className="flex h-16 items-center justify-between">
             <div className="flex items-center">
               <span className="text-xl font-bold text-gray-900">
-                InboxPilot
+                Sweepy
               </span>
             </div>
             <div className="flex items-center gap-4">

@@ -1,4 +1,4 @@
--- InboxPilot: Initial Database Schema
+-- Sweepy: Initial Database Schema
 -- All timestamps use timestamptz (UTC)
 -- All tables have RLS enabled
 

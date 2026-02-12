@@ -14,7 +14,7 @@ function sendToIsolated(type: string, payload?: unknown) {
       id: crypto.randomUUID(),
       type,
       payload,
-      source: 'inboxpilot-main',
+      source: 'sweepy-main',
       timestamp: Date.now(),
     },
     '*'
@@ -24,7 +24,7 @@ function sendToIsolated(type: string, payload?: unknown) {
 // Listen for commands from ISOLATED world
 window.addEventListener('message', (event) => {
   if (event.source !== window) return
-  if (event.data?.source !== 'inboxpilot-isolated') return
+  if (event.data?.source !== 'sweepy-isolated') return
 
   const { type, payload } = event.data
 
@@ -43,7 +43,7 @@ async function initGmailJs() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const GmailFactory = (window as any).Gmail
     if (!GmailFactory) {
-      console.error('[InboxPilot:Main] Gmail factory not found on window')
+      console.error('[Sweepy:Main] Gmail factory not found on window')
       sendToIsolated('HEALTH_CHECK_FAILED', {
         error: 'Gmail factory not available',
       })
@@ -58,7 +58,7 @@ async function initGmailJs() {
         if (userEmail) {
           isReady = true
           sendToIsolated('READY')
-          console.log(`[InboxPilot:Main] Gmail.js ready for ${userEmail}`)
+          console.log(`[Sweepy:Main] Gmail.js ready for ${userEmail}`)
         } else {
           sendToIsolated('HEALTH_CHECK_FAILED', {
             error: 'Could not read user email',

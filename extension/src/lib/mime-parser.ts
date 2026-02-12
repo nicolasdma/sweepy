@@ -53,7 +53,7 @@ export async function parseMimeHeaders(
       hasReturnPathMismatch,
     }
   } catch (error) {
-    console.error('[InboxPilot] MIME parse error:', error)
+    console.error('[Sweepy] MIME parse error:', error)
     return {}
   }
 }

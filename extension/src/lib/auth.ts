@@ -5,8 +5,8 @@ interface TokenData {
 }
 
 const REFRESH_BUFFER_MS = 5 * 60 * 1000 // 5 minutes before expiry
-const REFRESH_LOCK_KEY = 'inboxpilot:refresh_lock'
-const TOKEN_KEY = 'inboxpilot:token'
+const REFRESH_LOCK_KEY = 'sweepy:refresh_lock'
+const TOKEN_KEY = 'sweepy:token'
 
 export class AuthManager {
   private tokenData: TokenData | null = null

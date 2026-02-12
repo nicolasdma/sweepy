@@ -51,7 +51,7 @@ export function extractEmailData(gmailEmail: any): MinimalEmailData | null {
       hasUnsubscribeText: false,
     }
   } catch (error) {
-    console.error('[InboxPilot] Failed to extract email data:', error)
+    console.error('[Sweepy] Failed to extract email data:', error)
     return null
   }
 }

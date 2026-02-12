@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { rateLimiters } from '@/lib/redis'
 
-type RateLimitKey = keyof typeof rateLimiters
+type RateLimitKey = 'auth' | 'analyze' | 'actions'
 
 export interface AuthenticatedRequest {
   userId: string
@@ -25,7 +25,7 @@ export async function withAuth(
     )
   }
 
-  if (rateLimitKey) {
+  if (rateLimitKey && rateLimiters) {
     const limiter = rateLimiters[rateLimitKey]
     const { success, remaining } = await limiter.limit(user.id)
 

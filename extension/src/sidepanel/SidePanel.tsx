@@ -24,7 +24,7 @@ export function SidePanel() {
   return (
     <div className="min-h-screen bg-white p-4">
       <div className="mb-6 flex items-center gap-2">
-        <h1 className="text-lg font-bold text-gray-900">InboxPilot</h1>
+        <h1 className="text-lg font-bold text-gray-900">Sweepy</h1>
         <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs text-blue-700">
           Phase 1
         </span>

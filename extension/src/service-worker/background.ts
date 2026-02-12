@@ -18,10 +18,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // Handle extension install/update
 chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'install') {
-    console.log('[InboxPilot] Extension installed')
+    console.log('[Sweepy] Extension installed')
   } else if (details.reason === 'update') {
     console.log(
-      `[InboxPilot] Extension updated to ${chrome.runtime.getManifest().version}`
+      `[Sweepy] Extension updated to ${chrome.runtime.getManifest().version}`
     )
   }
 })
@@ -43,4 +43,4 @@ export function stopKeepAlive() {
   }
 }
 
-console.log('[InboxPilot] Service worker started')
+console.log('[Sweepy] Service worker started')

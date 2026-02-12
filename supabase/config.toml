@@ -1,5 +1,5 @@
 [project]
-id = "inboxpilot"
+id = "sweepy"
 
 [api]
 port = 54321
