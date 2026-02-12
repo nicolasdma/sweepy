@@ -4,7 +4,8 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get('code')
-  const next = searchParams.get('next') ?? '/dashboard'
+  const from = searchParams.get('from')
+  const next = from === 'extension' ? '/extension-callback' : (searchParams.get('next') ?? '/dashboard')
 
   if (code) {
     const supabase = await createServerSupabaseClient()
