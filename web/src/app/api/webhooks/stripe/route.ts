@@ -75,12 +75,14 @@ async function handleEvent(event: Stripe.Event) {
           : subscription.customer.id
 
       const status = mapSubscriptionStatus(subscription.status)
+      const periodEnd = (subscription as unknown as Record<string, number>).current_period_end
+        ?? subscription.items?.data?.[0]?.current_period_end
       const updates: Record<string, unknown> = {
         stripe_subscription_id: subscription.id,
         subscription_status: status,
-        current_period_end: new Date(
-          subscription.current_period_end * 1000
-        ).toISOString(),
+        current_period_end: periodEnd
+          ? new Date(periodEnd * 1000).toISOString()
+          : null,
       }
 
       if (subscription.status === 'trialing' && subscription.trial_start) {
@@ -109,13 +111,15 @@ async function handleEvent(event: Stripe.Event) {
 
       // Grace period: don't immediately revoke access
       // Set status to canceled, the access check adds 24h grace
+      const deletedPeriodEnd = (subscription as unknown as Record<string, number>).current_period_end
+        ?? subscription.items?.data?.[0]?.current_period_end
       await supabase
         .from('profiles')
         .update({
           subscription_status: 'canceled',
-          current_period_end: new Date(
-            subscription.current_period_end * 1000
-          ).toISOString(),
+          current_period_end: deletedPeriodEnd
+            ? new Date(deletedPeriodEnd * 1000).toISOString()
+            : null,
         })
         .eq('stripe_customer_id', customerId)
 

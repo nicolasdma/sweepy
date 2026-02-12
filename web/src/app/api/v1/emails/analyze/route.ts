@@ -158,18 +158,22 @@ export async function POST(request: NextRequest) {
     const periodStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
     const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString()
 
-    await supabase.rpc('increment_usage', {
-      p_user_id: auth.userId,
-      p_period_start: periodStart,
-      p_period_end: periodEnd,
-      p_scans: 1,
-      p_emails: emails.length,
-      p_llm_calls: stats.resolvedByLlm > 0 ? Math.ceil(stats.resolvedByLlm / 20) : 0,
-      p_tokens: 0, // TODO: track actual tokens
-    }).catch(() => {
-      // Non-critical: just log
+    try {
+      await supabase.from('usage_tracking').upsert(
+        {
+          user_id: auth.userId,
+          period_start: periodStart,
+          period_end: periodEnd,
+          scans_count: 1,
+          emails_processed: emails.length,
+          llm_calls_count: stats.resolvedByLlm > 0 ? Math.ceil(stats.resolvedByLlm / 20) : 0,
+          llm_tokens_used: 0, // TODO: track actual tokens
+        },
+        { onConflict: 'user_id,period_start' }
+      )
+    } catch {
       console.warn('[Analyze] Failed to update usage tracking')
-    })
+    }
 
     return NextResponse.json({
       results,
