@@ -1,0 +1,5 @@
+export { categorizeEmails } from './pipeline'
+export type { PipelineResult, PipelineStats } from './pipeline'
+export { applyHeuristics, applyHeuristicsBatch } from './heuristics'
+export { getSenderCategory, setSenderCategory, invalidateSenderCache } from './sender-cache'
+export { classifyWithLLM, estimateLLMCost } from './llm'
