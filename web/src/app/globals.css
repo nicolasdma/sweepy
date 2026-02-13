@@ -24,14 +24,11 @@ body {
   background-clip: text;
 }
 
-/* ---- Glass panel (stacking sections) ---- */
-.glass-panel {
-  background: rgba(250, 250, 248, 0.85);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  border-top: 1px solid rgba(255, 255, 255, 0.8);
+/* ---- Stacking panel (opaque sections that slide over) ---- */
+.stack-panel {
+  background: #fafaf8;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
   box-shadow: 0 -4px 30px rgba(0, 0, 0, 0.045);
-  will-change: transform;
 }
 
 /* ---- Glass card (feature cards inside panels) ---- */

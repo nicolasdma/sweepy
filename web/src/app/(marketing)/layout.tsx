@@ -1,8 +1,19 @@
-export default function MarketingLayout({
+import { createServerSupabaseClient } from '@/lib/supabase/server'
+
+export default async function MarketingLayout({
   children,
 }: {
   children: React.ReactNode
 }) {
+  let isLoggedIn = false
+  try {
+    const supabase = await createServerSupabaseClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    isLoggedIn = !!user
+  } catch {
+    // Not logged in
+  }
+
   return (
     <div className="min-h-screen bg-[#fafaf8] flex flex-col">
       {/* ── Header ── */}
@@ -16,18 +27,29 @@ export default function MarketingLayout({
           </a>
 
           <div className="flex items-center gap-5">
-            <a
-              href="/login"
-              className="text-sm text-[#64648a] transition-colors hover:text-[#0f0f23]"
-            >
-              Log in
-            </a>
-            <a
-              href="/login"
-              className="glow-button rounded-lg px-4 py-2 text-sm font-medium text-white"
-            >
-              Get Started
-            </a>
+            {isLoggedIn ? (
+              <a
+                href="/dashboard"
+                className="glow-button rounded-lg px-4 py-2 text-sm font-medium text-white"
+              >
+                Dashboard
+              </a>
+            ) : (
+              <>
+                <a
+                  href="/login"
+                  className="text-sm text-[#64648a] transition-colors hover:text-[#0f0f23]"
+                >
+                  Log in
+                </a>
+                <a
+                  href="/login"
+                  className="glow-button rounded-lg px-4 py-2 text-sm font-medium text-white"
+                >
+                  Get Started
+                </a>
+              </>
+            )}
           </div>
         </nav>
       </header>

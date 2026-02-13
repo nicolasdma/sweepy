@@ -217,17 +217,34 @@ messageBus.on('REQUEST_SCAN', async (message, _sender) => {
       },
       target: 'main',
     }, 10_000)
-  } catch (error) {
-    scanState.status = 'error'
-    scanState.error = error instanceof Error ? error.message : 'Failed to reach content script'
-    await persistScanState()
-    stopKeepAlive()
+  } catch {
+    // Content script not loaded — try injecting and retrying once
+    console.warn('[Sweepy:Worker] Content script not responding, injecting...')
+    try {
+      await injectContentScriptsIntoGmailTabs()
+      // Wait for gmail.js to initialize
+      await new Promise((r) => setTimeout(r, 3000))
 
-    await messageBus.broadcast({
-      type: 'SCAN_ERROR',
-      payload: { error: scanState.error },
-    })
-    return { error: scanState.error }
+      await messageBus.sendToTab(gmailTabId, {
+        type: 'START_EMAIL_EXTRACTION',
+        payload: {
+          maxEmails: msg.payload.maxEmails,
+          maxDays: msg.payload.maxDays,
+        },
+        target: 'main',
+      }, 10_000)
+    } catch (retryError) {
+      scanState.status = 'error'
+      scanState.error = 'Gmail content script not ready. Please reload the Gmail tab and try again.'
+      await persistScanState()
+      stopKeepAlive()
+
+      await messageBus.broadcast({
+        type: 'SCAN_ERROR',
+        payload: { error: scanState.error },
+      })
+      return { error: scanState.error }
+    }
   }
 
   return { started: true, scanId: scanState.scanId }
@@ -401,6 +418,33 @@ messageBus.on('PONG', async () => {
   return { alive: true }
 })
 
+// ── Inject content scripts into existing Gmail tabs ──────────────
+async function injectContentScriptsIntoGmailTabs(): Promise<void> {
+  const gmailTabs = await chrome.tabs.query({ url: 'https://mail.google.com/*' })
+  const manifest = chrome.runtime.getManifest()
+
+  for (const tab of gmailTabs) {
+    if (!tab.id) continue
+    try {
+      // Inject each content script defined in the manifest
+      for (const cs of manifest.content_scripts ?? []) {
+        const world = ((cs as Record<string, unknown>).world as 'MAIN' | 'ISOLATED') ?? 'ISOLATED'
+        for (const jsFile of cs.js ?? []) {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            files: [jsFile],
+            world,
+          })
+        }
+      }
+      console.log(`[Sweepy] Injected content scripts into tab ${tab.id}`)
+    } catch (error) {
+      // Tab might not be ready or permission denied — that's OK
+      console.warn(`[Sweepy] Could not inject into tab ${tab.id}:`, error)
+    }
+  }
+}
+
 // ── Chrome event listeners ───────────────────────────────────────
 
 // Open side panel when extension icon is clicked
@@ -411,7 +455,7 @@ chrome.action.onClicked.addListener((tab) => {
 })
 
 // Capture auth token from extension-callback page URL hash
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+chrome.tabs.onUpdated.addListener((tabId, _changeInfo, tab) => {
   if (!tab.url) return
   if (!tab.url.includes('/extension-callback#')) return
 
@@ -423,10 +467,18 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     const expiresIn = parseInt(params.get('expiresIn') ?? '86400', 10)
 
     if (token) {
-      authManager.setToken(token, expiresIn).then(() => {
+      authManager.setToken(token, expiresIn).then(async () => {
         console.log('[Sweepy] Auth token received from web app')
-        // Close the callback tab — auth is done
+        // Close the callback tab
         chrome.tabs.remove(tabId).catch(() => {})
+
+        // Open side panel on Gmail tab automatically
+        const gmailTabId = await findGmailTab()
+        if (gmailTabId) {
+          // Focus the Gmail tab first
+          chrome.tabs.update(gmailTabId, { active: true }).catch(() => {})
+          chrome.sidePanel.open({ tabId: gmailTabId }).catch(() => {})
+        }
       })
     }
   } catch (error) {
@@ -437,7 +489,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 // Route all incoming messages through the bus
 messageBus.listen()
 
-// Handle extension install/update
+// Handle extension install/update — inject content scripts into existing tabs
 chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'install') {
     console.log('[Sweepy] Extension installed')
@@ -446,6 +498,9 @@ chrome.runtime.onInstalled.addListener((details) => {
       `[Sweepy] Extension updated to ${chrome.runtime.getManifest().version}`,
     )
   }
+
+  // Inject content scripts into Gmail tabs that were open before install/update
+  injectContentScriptsIntoGmailTabs()
 })
 
 // ── Initialization ───────────────────────────────────────────────
