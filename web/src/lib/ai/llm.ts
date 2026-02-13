@@ -218,8 +218,8 @@ async function callProviderWithRetry(
       const completion = await provider.client.chat.completions.create({
         model: provider.model,
         temperature: 0,
-        seed: 42,
-        response_format: { type: 'json_object' },
+        // response_format and seed are OpenAI-specific; Anthropic doesn't support them
+        ...(provider.name === 'openai' ? { seed: 42, response_format: { type: 'json_object' as const } } : {}),
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: userPrompt },
@@ -243,8 +243,8 @@ async function callProviderWithRetry(
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error))
 
-      // Don't retry on permanent errors (quota exceeded, auth issues)
-      if (error instanceof OpenAI.APIError && (error.status === 401 || error.code === 'insufficient_quota')) {
+      // Don't retry on permanent errors (quota, auth, bad request)
+      if (error instanceof OpenAI.APIError && (error.status === 400 || error.status === 401 || error.code === 'insufficient_quota')) {
         throw lastError
       }
 
