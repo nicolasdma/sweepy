@@ -7,7 +7,14 @@
  * The isolated bridge forwards these to the service worker unchanged (except source/version).
  */
 
-import Gmail from 'gmail-js'
+// gmail-js uses `exports.Gmail = Gmail` (CJS named export), but its .d.ts
+// declares `Gmail` as an ambient global class. `import Gmail from 'gmail-js'`
+// satisfies TS but Vite's CJS interop gives us the module object `{ Gmail: fn }`
+// in production, not the constructor directly. We handle both cases.
+import GmailDefault from 'gmail-js'
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const GmailConstructor: new (jq: false) => any =
+  (GmailDefault as any).Gmail ?? GmailDefault
 import {
   extractEmailData,
   extractFromThread,
@@ -80,7 +87,7 @@ function initGmailJs(): void {
     // gmail.js constructor accepts jQuery or `false` (no jQuery).
     // Passing `false` disables DOM-based features (compose helpers, toolbars)
     // but keeps XHR interception and data reading -- which is all we need.
-    gmail = new Gmail(false)
+    gmail = new GmailConstructor(false)
 
     gmail.observe.on('load', () => {
       try {
