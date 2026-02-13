@@ -13,8 +13,13 @@
 // in production, not the constructor directly. We handle both cases.
 import GmailDefault from 'gmail-js'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const GmailConstructor: new (jq: false) => any =
+const GmailConstructor: new (jq: any) => any =
   (GmailDefault as any).Gmail ?? GmailDefault
+
+// gmail.js claims to work without jQuery (`new Gmail(false)`) but many
+// internal methods use `$()` for DOM queries — including observe.on('load').
+// We provide a minimal jQuery shim that covers what gmail.js actually needs.
+import { miniJQuery } from '@/lib/jquery-shim'
 import {
   extractEmailData,
   extractFromThread,
@@ -36,8 +41,8 @@ interface MainWorldPostMessage {
   timestamp: number
 }
 
-// gmail.js instance -- typed as `any` because the Gmail class types expect
-// jQuery which we don't ship; the runtime works fine with `false`.
+// gmail.js instance -- typed as `any` because the Gmail class types
+// expect full jQuery; we pass a minimal shim instead.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let gmail: any = null
 let isReady = false
@@ -107,7 +112,7 @@ function initGmailJs(): void {
     // gmail.js constructor accepts jQuery or `false` (no jQuery).
     // Passing `false` disables DOM-based features (compose helpers, toolbars)
     // but keeps XHR interception and data reading -- which is all we need.
-    gmail = new GmailConstructor(false)
+    gmail = new GmailConstructor(miniJQuery as any)
 
     // Normal path: gmail.js fires 'load' when it detects Gmail's initial data load.
     gmail.observe.on('load', () => {
