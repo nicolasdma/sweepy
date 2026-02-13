@@ -10,6 +10,22 @@
  * 4. Validate message origins
  */
 
+// After extension reload/update, old content scripts lose their chrome.runtime
+// context. Detect this early so we can bail out silently instead of throwing.
+function isContextValid(): boolean {
+  try {
+    return !!chrome.runtime?.id
+  } catch {
+    return false
+  }
+}
+
+if (!isContextValid()) {
+  // Old content script from a previous extension version — nothing to do.
+  // The page needs a reload to get fresh content scripts.
+  console.warn('[Sweepy:Isolated] Extension context invalidated (extension was reloaded). Reload Gmail to reconnect.')
+} else {
+
 const EXTENSION_VERSION = chrome.runtime.getManifest().version
 
 // Track whether main world script has reported ready
@@ -24,6 +40,9 @@ window.addEventListener('message', (event: MessageEvent) => {
   if (event.source !== window) return
   // Source validation: only accept messages from our main world script
   if (event.data?.source !== 'sweepy-main') return
+
+  // Re-check context validity (extension may have reloaded while page stayed open)
+  if (!isContextValid()) return
 
   const message = event.data
 
@@ -45,6 +64,7 @@ window.addEventListener('message', (event: MessageEvent) => {
       version: EXTENSION_VERSION,
     })
     .catch((error: Error) => {
+      if (!isContextValid()) return // Silently ignore if context was invalidated
       console.error('[Sweepy:Isolated] Failed to forward message to worker:', error)
     })
 })
@@ -88,3 +108,5 @@ chrome.runtime.onMessage.addListener(
 // No manual injection needed.
 
 console.log(`[Sweepy:Isolated] Content script loaded (v${EXTENSION_VERSION})`)
+
+} // end isContextValid() else block
