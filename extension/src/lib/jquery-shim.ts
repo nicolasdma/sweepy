@@ -256,9 +256,119 @@ miniJQuery.extend = function (...args: any[]): any {
 }
 
 miniJQuery.ajax = function (config: any): any {
-  // gmail.js uses $.ajax for some operations — return a minimal thenable
-  console.warn('[Sweepy:jQueryShim] $.ajax called but not supported:', config?.url)
-  return { done: () => miniJQuery.ajax, fail: () => miniJQuery.ajax }
+  const xhr = new XMLHttpRequest()
+  const method = (config.type || config.method || 'GET').toUpperCase()
+  const isAsync = config.async !== false
+  let url: string = config.url || ''
+
+  // Append data to URL for GET requests
+  if (method === 'GET' && config.data) {
+    const params =
+      typeof config.data === 'string'
+        ? config.data
+        : miniJQuery.param(config.data)
+    if (params) {
+      url += (url.includes('?') ? '&' : '?') + params
+    }
+  }
+
+  // Build body for non-GET requests
+  const body =
+    method !== 'GET' && config.data
+      ? typeof config.data === 'string'
+        ? config.data
+        : miniJQuery.param(config.data)
+      : null
+
+  xhr.open(method, url, isAsync)
+
+  // Set content type for POST with data
+  if (method !== 'GET' && config.data && config.contentType !== false) {
+    xhr.setRequestHeader(
+      'Content-Type',
+      config.contentType || 'application/x-www-form-urlencoded; charset=UTF-8',
+    )
+  }
+
+  // Set custom headers
+  if (config.headers) {
+    for (const [key, value] of Object.entries(config.headers)) {
+      xhr.setRequestHeader(key, value as string)
+    }
+  }
+
+  // ── Synchronous request (used by gmail.js tools.make_request) ──
+  if (!isAsync) {
+    xhr.send(body)
+
+    let data: any = xhr.responseText
+    if (config.dataType === 'json') {
+      try { data = JSON.parse(xhr.responseText) } catch { /* leave as text */ }
+    }
+
+    if (xhr.status >= 200 && xhr.status < 400) {
+      config.success?.(data, 'success', xhr)
+    } else {
+      config.error?.(xhr, 'error', xhr.statusText)
+    }
+
+    // Return jqXHR-like object with responseText (gmail.js reads this directly)
+    const syncResult: any = {
+      responseText: xhr.responseText,
+      status: xhr.status,
+      statusText: xhr.statusText,
+      done(cb: (...args: any[]) => void) { if (xhr.status >= 200 && xhr.status < 400) cb(data, 'success', xhr); return syncResult },
+      fail(cb: (...args: any[]) => void) { if (xhr.status < 200 || xhr.status >= 400) cb(xhr, 'error', xhr.statusText); return syncResult },
+      always(cb: (...args: any[]) => void) { cb(data, xhr.status < 400 ? 'success' : 'error', xhr); return syncResult },
+    }
+    return syncResult
+  }
+
+  // ── Asynchronous request (used by gmail.js make_request_async) ──
+  const doneCbs: ((...args: any[]) => void)[] = []
+  const failCbs: ((...args: any[]) => void)[] = []
+  const alwaysCbs: ((...args: any[]) => void)[] = []
+
+  const deferred: any = {
+    responseText: '',
+    status: 0,
+    done(cb: (...args: any[]) => void) { doneCbs.push(cb); return deferred },
+    fail(cb: (...args: any[]) => void) { failCbs.push(cb); return deferred },
+    always(cb: (...args: any[]) => void) { alwaysCbs.push(cb); return deferred },
+    then(done?: (...args: any[]) => void, fail?: (...args: any[]) => void) {
+      if (done) doneCbs.push(done)
+      if (fail) failCbs.push(fail)
+      return deferred
+    },
+  }
+
+  xhr.onload = function () {
+    deferred.responseText = xhr.responseText
+    deferred.status = xhr.status
+
+    let data: any = xhr.responseText
+    if (config.dataType === 'json') {
+      try { data = JSON.parse(xhr.responseText) } catch { /* leave as text */ }
+    }
+    if (xhr.status >= 200 && xhr.status < 400) {
+      config.success?.(data, 'success', xhr)
+      for (const cb of doneCbs) cb(data, 'success', xhr)
+    } else {
+      config.error?.(xhr, 'error', xhr.statusText)
+      for (const cb of failCbs) cb(xhr, 'error', xhr.statusText)
+    }
+    for (const cb of alwaysCbs) cb(data, xhr.status < 400 ? 'success' : 'error', xhr)
+  }
+
+  xhr.onerror = function () {
+    config.error?.(xhr, 'error', xhr.statusText)
+    for (const cb of failCbs) cb(xhr, 'error', xhr.statusText)
+    for (const cb of alwaysCbs) cb(xhr, 'error', xhr.statusText)
+  }
+
+  xhr.send(body)
+
+  return deferred
 }
 
 export { miniJQuery }

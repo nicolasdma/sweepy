@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "AI-powered email categorization and inbox cleanup for Gmail",
   "permissions": ["storage", "sidePanel", "activeTab", "scripting", "tabs"],
-  "host_permissions": ["https://mail.google.com/*"],
+  "host_permissions": ["https://mail.google.com/*", "http://localhost:3000/*"],
   "background": {
     "service_worker": "src/service-worker/background.ts",
     "type": "module"

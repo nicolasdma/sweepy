@@ -81,13 +81,13 @@ chrome.runtime.onMessage.addListener(
   ) => {
     // Only forward messages targeted at the main world
     if (message.target === 'main') {
+      const msgId = message.id as string | undefined
+
       if (!mainWorldReady) {
         console.warn(
-          '[Sweepy:Isolated] Received message for main world but it is not ready yet. Queuing is not supported -- message dropped:',
+          '[Sweepy:Isolated] Main world not confirmed ready yet — forwarding anyway:',
           message.type
         )
-        sendResponse({ received: false, reason: 'main_world_not_ready' })
-        return false
       }
 
       window.postMessage(
@@ -97,7 +97,7 @@ chrome.runtime.onMessage.addListener(
         },
         '*'
       )
-      sendResponse({ received: true })
+      sendResponse({ id: msgId, result: { received: true } })
     }
 
     return false

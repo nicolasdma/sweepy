@@ -48,6 +48,10 @@ let gmail: any = null
 let isReady = false
 let scanAbortController: AbortController | null = null
 
+// Version counter to invalidate old message listeners after re-initialization
+// eslint-disable-next-line @typescript-eslint/no-explicit-any, prefer-const
+let _msgVersion: number = 0
+
 // ---------------------------------------------------------------------------
 // PostMessage helpers
 // ---------------------------------------------------------------------------
@@ -70,6 +74,9 @@ function sendToIsolated(type: string, payload?: unknown): void {
 window.addEventListener('message', (event: MessageEvent) => {
   if (event.source !== window) return
   if (event.data?.source !== 'sweepy-isolated') return
+  // Ignore messages if a newer script version has taken over
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if ((window as any).__sweepyMsgVersion !== _msgVersion) return
 
   const { type, payload } = event.data
 
@@ -140,9 +147,126 @@ function initGmailJs(): void {
 // Scan logic
 // ---------------------------------------------------------------------------
 
+/**
+ * Get visible email/thread IDs from Gmail.
+ * gmail.js's built-in visible_emails() uses JSON.parse on Gmail's response,
+ * which fails because Gmail returns single-quoted JS (not valid JSON).
+ * We bypass that by using gmail.tools.parse_response (which handles the
+ * proprietary format) and then gmail.tools.parse_view_data to extract IDs.
+ */
+function getVisibleEmailIds(): string[] {
+  // Strategy 1: use gmail.js visible_emails() (may fail on newer Gmail)
+  try {
+    const emails = gmail.get.visible_emails()
+    if (emails && emails.length > 0) {
+      const ids = emails.map((e: any) => typeof e === 'string' ? e : e.id)
+      console.log('[Sweepy:Main] Strategy 1 (visible_emails): found', ids.length, 'IDs')
+      return ids
+    }
+  } catch {
+    // Expected: JSON.parse fails on single-quoted Gmail responses
+  }
+
+  // Strategy 2: manually fetch + parse with gmail.js's parse_response
+  try {
+    const url = gmail.helper.get.visible_emails_pre()
+    const rawData = gmail.tools.make_request(url)
+    if (rawData) {
+      const parsed = gmail.tools.parse_response(rawData)
+      const ids: string[] = []
+
+      for (const chunk of parsed) {
+        try {
+          const threadData = gmail.tools.parse_view_data(chunk)
+          for (const thread of threadData) {
+            if (thread && thread.id) ids.push(thread.id)
+          }
+        } catch {
+          // Not all chunks contain thread data — skip
+        }
+      }
+
+      if (ids.length > 0) {
+        console.log('[Sweepy:Main] Strategy 2 (parse_response): found', ids.length, 'IDs')
+        return ids
+      }
+    }
+  } catch (e) {
+    console.error('[Sweepy:Main] Strategy 2 failed:', e)
+  }
+
+  // Strategy 3: read thread IDs from the DOM
+  try {
+    const ids: string[] = []
+
+    // Gmail uses different DOM structures; try multiple selectors
+    // Modern Gmail: each thread row has data-thread-id or data-legacy-thread-id
+    document.querySelectorAll('[data-legacy-thread-id]').forEach((el) => {
+      const id = el.getAttribute('data-legacy-thread-id')
+      if (id) ids.push(id)
+    })
+
+    if (ids.length === 0) {
+      document.querySelectorAll('[data-thread-id]').forEach((el) => {
+        const id = el.getAttribute('data-thread-id')
+        if (id) ids.push(id)
+      })
+    }
+
+    // Fallback: tr.zA rows (classic Gmail) with thread ID in various attributes
+    if (ids.length === 0) {
+      document.querySelectorAll('tr.zA').forEach((row) => {
+        // Try multiple attribute patterns
+        const id = row.getAttribute('data-legacy-thread-id')
+          || row.getAttribute('data-thread-id')
+          || row.querySelector('[data-legacy-thread-id]')?.getAttribute('data-legacy-thread-id')
+          || row.querySelector('[data-thread-id]')?.getAttribute('data-thread-id')
+        if (id) ids.push(id)
+      })
+    }
+
+    // Last fallback: look for thread IDs in Gmail's specific span elements
+    if (ids.length === 0) {
+      // Gmail thread list rows have spans with data-thread-id
+      document.querySelectorAll('span[data-thread-id]').forEach((el) => {
+        const id = el.getAttribute('data-thread-id')
+        if (id) ids.push(id)
+      })
+    }
+
+    console.log('[Sweepy:Main] Strategy 3 (DOM): found', ids.length, 'IDs')
+    if (ids.length > 0) return ids
+  } catch (e) {
+    console.error('[Sweepy:Main] Strategy 3 failed:', e)
+  }
+
+  // Strategy 4: use gmail.js's cached tracker data from XHR interception
+  try {
+    if (gmail.tracker && gmail.tracker.view_data) {
+      const ids: string[] = []
+      for (const chunk of gmail.tracker.view_data) {
+        try {
+          const threadData = gmail.tools.parse_view_data(Array.isArray(chunk) ? chunk : [chunk])
+          for (const thread of threadData) {
+            if (thread && thread.id) ids.push(thread.id)
+          }
+        } catch { /* skip */ }
+      }
+      console.log('[Sweepy:Main] Strategy 4 (tracker cache): found', ids.length, 'IDs')
+      if (ids.length > 0) return ids
+    }
+  } catch (e) {
+    console.error('[Sweepy:Main] Strategy 4 failed:', e)
+  }
+
+  console.warn('[Sweepy:Main] All strategies failed to find email IDs')
+  return []
+}
+
 const BATCH_SIZE = 50
 
 async function handleStartScan(options: ScanOptions): Promise<void> {
+  console.log('[Sweepy:Main] handleStartScan called, isReady:', isReady, 'gmail:', !!gmail)
   if (!isReady || !gmail) {
     sendToIsolated('EXTRACTION_ERROR', { error: 'Gmail.js not ready' })
     return
@@ -154,8 +278,9 @@ async function handleStartScan(options: ScanOptions): Promise<void> {
   const signal = scanAbortController.signal
 
   try {
-    // Get visible email thread IDs from gmail.js
-    const visibleEmailIds: string[] = gmail.get.visible_emails() || []
+    // Get visible email thread IDs
+    const visibleEmailIds = getVisibleEmailIds()
+    console.log('[Sweepy:Main] Found', visibleEmailIds.length, 'visible emails')
     if (visibleEmailIds.length === 0) {
       sendToIsolated('EXTRACTION_RESULT', { emails: [] })
       return
@@ -383,16 +508,40 @@ function sleep(ms: number): Promise<void> {
 // Bootstrap
 // ---------------------------------------------------------------------------
 
-// Guard against double initialization. When the extension is reloaded or
-// updated while Gmail is open, the programmatic injection may re-run this
-// script. gmail.js modifies XMLHttpRequest.prototype and running it twice
-// causes "l is not a function" errors from double-wrapped XHR hooks.
+// Invalidate any previous message listener from a prior script execution
+// so old closures (with stale gmail/isReady) don't process messages.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+;(window as any).__sweepyMsgVersion = ((window as any).__sweepyMsgVersion || 0) + 1
+_msgVersion = (window as any).__sweepyMsgVersion
+
+// When the extension is reloaded/updated while Gmail is open, programmatic
+// injection re-runs this script. gmail.js modifies XMLHttpRequest.prototype,
+// so we must restore the originals before re-creating the gmail instance.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 if ((window as any).__sweepyMainWorldLoaded) {
-  console.log('[Sweepy:Main] Already initialized, skipping re-initialization')
-} else {
+  console.log('[Sweepy:Main] Re-initializing (extension was updated)')
+  // Restore original XHR methods so gmail.js doesn't double-wrap them
+  if ((window as any).__sweepyOrigXhrOpen) {
+    XMLHttpRequest.prototype.open = (window as any).__sweepyOrigXhrOpen
+  }
+  if ((window as any).__sweepyOrigXhrSend) {
+    XMLHttpRequest.prototype.send = (window as any).__sweepyOrigXhrSend
+  }
+  // Reset state
+  gmail = null
+  isReady = false
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ;(window as any).__sweepyMainWorldLoaded = true
-  initGmailJs()
-  console.log('[Sweepy:Main] Main world script loaded')
+  ;(scanAbortController as any)?.abort()
+  scanAbortController = null
 }
+
+// Save original XHR methods before gmail.js wraps them
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+;(window as any).__sweepyOrigXhrOpen = (window as any).__sweepyOrigXhrOpen || XMLHttpRequest.prototype.open
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+;(window as any).__sweepyOrigXhrSend = (window as any).__sweepyOrigXhrSend || XMLHttpRequest.prototype.send
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+;(window as any).__sweepyMainWorldLoaded = true
+
+initGmailJs()
+console.log('[Sweepy:Main] Main world script loaded')

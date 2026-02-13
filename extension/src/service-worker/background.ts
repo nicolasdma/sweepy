@@ -175,6 +175,53 @@ async function analyzeEmails(emails: MinimalEmailData[]): Promise<{
 
 // ── Message handlers ─────────────────────────────────────────────
 
+// Start the extraction process asynchronously (fire-and-forget from handler)
+async function startExtraction(
+  gmailTabId: number,
+  payload: { maxEmails: number; maxDays: number },
+): Promise<void> {
+  try {
+    await messageBus.sendToTab(gmailTabId, {
+      type: 'START_EMAIL_EXTRACTION',
+      payload: {
+        maxEmails: payload.maxEmails,
+        maxDays: payload.maxDays,
+      },
+      target: 'main',
+    }, 10_000)
+  } catch {
+    // Content script not loaded — try injecting and retrying once
+    console.warn('[Sweepy:Worker] Content script not responding, injecting...')
+    try {
+      await injectContentScriptsIntoGmailTabs()
+      // Wait for gmail.js to initialize
+      await new Promise((r) => setTimeout(r, 3000))
+
+      await messageBus.sendToTab(gmailTabId, {
+        type: 'START_EMAIL_EXTRACTION',
+        payload: {
+          maxEmails: payload.maxEmails,
+          maxDays: payload.maxDays,
+        },
+        target: 'main',
+      }, 10_000)
+    } catch {
+      // Only update state if still scanning (could have been cancelled)
+      if (scanState.status !== 'scanning') return
+
+      scanState.status = 'error'
+      scanState.error = 'Gmail content script not ready. Please reload the Gmail tab and try again.'
+      await persistScanState()
+      stopKeepAlive()
+
+      await messageBus.broadcast({
+        type: 'SCAN_ERROR',
+        payload: { error: scanState.error },
+      })
+    }
+  }
+}
+
 // Side panel requests a scan
 messageBus.on('REQUEST_SCAN', async (message, _sender) => {
   const msg = message as Extract<SidePanelMessage, { type: 'REQUEST_SCAN' }>
@@ -207,45 +254,10 @@ messageBus.on('REQUEST_SCAN', async (message, _sender) => {
   // Notify side panel that scan has started
   await broadcastScanStatus()
 
-  // Forward extraction request to the content script on the Gmail tab
-  try {
-    await messageBus.sendToTab(gmailTabId, {
-      type: 'START_EMAIL_EXTRACTION',
-      payload: {
-        maxEmails: msg.payload.maxEmails,
-        maxDays: msg.payload.maxDays,
-      },
-      target: 'main',
-    }, 10_000)
-  } catch {
-    // Content script not loaded — try injecting and retrying once
-    console.warn('[Sweepy:Worker] Content script not responding, injecting...')
-    try {
-      await injectContentScriptsIntoGmailTabs()
-      // Wait for gmail.js to initialize
-      await new Promise((r) => setTimeout(r, 3000))
-
-      await messageBus.sendToTab(gmailTabId, {
-        type: 'START_EMAIL_EXTRACTION',
-        payload: {
-          maxEmails: msg.payload.maxEmails,
-          maxDays: msg.payload.maxDays,
-        },
-        target: 'main',
-      }, 10_000)
-    } catch (retryError) {
-      scanState.status = 'error'
-      scanState.error = 'Gmail content script not ready. Please reload the Gmail tab and try again.'
-      await persistScanState()
-      stopKeepAlive()
-
-      await messageBus.broadcast({
-        type: 'SCAN_ERROR',
-        payload: { error: scanState.error },
-      })
-      return { error: scanState.error }
-    }
-  }
+  // Start extraction asynchronously — errors are handled via SCAN_ERROR broadcasts
+  startExtraction(gmailTabId, msg.payload).catch((error) => {
+    console.error('[Sweepy:Worker] Unexpected extraction error:', error)
+  })
 
   return { started: true, scanId: scanState.scanId }
 })
