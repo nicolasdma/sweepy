@@ -1,9 +1,13 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
+import { MessageBus } from '@/lib/message-bus'
+import type {
+  ScanStatus,
+  WorkerToSidePanelMessage,
+} from '@shared/types/messages'
+import { isExtensionMessage } from '@shared/types/messages'
 
 // Set to false before production builds to strip the dev toggle
 const __DEV__ = true
-
-type ScanStatus = 'idle' | 'scanning' | 'complete' | 'error'
 
 type EmailCategory =
   | 'newsletter'
@@ -345,21 +349,117 @@ export function SidePanel() {
   const [status, setStatus] = useState<ScanStatus>('idle')
   const [progress, setProgress] = useState({ processed: 0, total: 0 })
   const [results] = useState<ScanResults>(MOCK_RESULTS)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const messageBusRef = useRef<MessageBus | null>(null)
 
-  const handleScan = async () => {
+  // Initialize message bus and listen for worker messages
+  useEffect(() => {
+    const bus = new MessageBus('sidepanel')
+    messageBusRef.current = bus
+
+    // Listen for incoming messages from the service worker
+    const handleMessage = (
+      raw: unknown,
+      _sender: chrome.runtime.MessageSender,
+      sendResponse: (response?: unknown) => void,
+    ) => {
+      if (!isExtensionMessage(raw)) return false
+
+      const message = raw as WorkerToSidePanelMessage
+
+      switch (message.type) {
+        case 'SCAN_PROGRESS':
+          setProgress({
+            processed: message.payload.processed,
+            total: message.payload.total,
+          })
+          break
+
+        case 'SCAN_COMPLETE':
+          setStatus('complete')
+          // TODO: Use message.payload.results when API integration is ready
+          break
+
+        case 'SCAN_ERROR':
+          setStatus('error')
+          setErrorMessage(message.payload.error)
+          break
+
+        case 'SCAN_STATUS':
+          setStatus(message.payload.status)
+          if (message.payload.progress) {
+            setProgress(message.payload.progress)
+          }
+          break
+
+        case 'VERSION_MISMATCH':
+          console.warn(
+            '[Sweepy:SidePanel] Version mismatch detected:',
+            message.payload,
+          )
+          break
+      }
+
+      sendResponse({ ack: true })
+      return true // Keep channel open
+    }
+
+    chrome.runtime.onMessage.addListener(handleMessage)
+
+    // Request current scan status on mount (in case we re-opened the panel)
+    bus
+      .sendToWorker({ type: 'GET_SCAN_STATUS' })
+      .then((response) => {
+        const state = response as {
+          status: ScanStatus
+          progress: { processed: number; total: number } | null
+          error: string | null
+        }
+        setStatus(state.status)
+        if (state.progress) {
+          setProgress(state.progress)
+        }
+        if (state.error) {
+          setErrorMessage(state.error)
+        }
+      })
+      .catch(() => {
+        // Worker may not be ready yet — that's OK
+      })
+
+    return () => {
+      chrome.runtime.onMessage.removeListener(handleMessage)
+      bus.destroy()
+      messageBusRef.current = null
+    }
+  }, [])
+
+  const handleScan = useCallback(async () => {
     setStatus('scanning')
+    setProgress({ processed: 0, total: 0 })
+    setErrorMessage(null)
+
     try {
-      await chrome.runtime.sendMessage({
-        id: crypto.randomUUID(),
+      await messageBusRef.current?.sendToWorker({
         type: 'REQUEST_SCAN',
         payload: { maxEmails: 1000, maxDays: 30 },
-        source: 'sidepanel',
-        timestamp: Date.now(),
       })
-    } catch {
+    } catch (error) {
       setStatus('error')
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Failed to start scan',
+      )
     }
-  }
+  }, [])
+
+  const handleCancel = useCallback(async () => {
+    try {
+      await messageBusRef.current?.sendToWorker({ type: 'CANCEL_SCAN' })
+      setStatus('idle')
+    } catch {
+      // Best effort
+    }
+  }, [])
 
   const grouped = groupByCategory(results.emails)
 
@@ -427,6 +527,12 @@ export function SidePanel() {
               }}
             />
           </div>
+          <button
+            onClick={handleCancel}
+            className="mt-3 w-full rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
+          >
+            Cancel Scan
+          </button>
         </div>
       )}
 
@@ -434,10 +540,14 @@ export function SidePanel() {
       {status === 'error' && (
         <div className="rounded-lg border border-red-200 bg-red-50 p-4">
           <p className="text-sm text-red-700">
-            Something went wrong. Please reload Gmail and try again.
+            {errorMessage ??
+              'Something went wrong. Please reload Gmail and try again.'}
           </p>
           <button
-            onClick={() => setStatus('idle')}
+            onClick={() => {
+              setStatus('idle')
+              setErrorMessage(null)
+            }}
             className="mt-2 text-sm text-red-600 underline"
           >
             Try again

@@ -7,6 +7,7 @@ import type {
   RemoteConfig,
   ApiError,
 } from '@shared/types/api'
+import { authManager } from './auth'
 
 const DEFAULT_API_BASE = 'http://localhost:3000/api/v1'
 
@@ -22,32 +23,24 @@ export class ApiRequestError extends Error {
 
 class ApiClient {
   private baseUrl: string
-  private token: string | null = null
 
   constructor(baseUrl: string = DEFAULT_API_BASE) {
     this.baseUrl = baseUrl
-  }
-
-  setToken(token: string) {
-    this.token = token
-  }
-
-  clearToken() {
-    this.token = null
   }
 
   private async request<T>(
     path: string,
     options: RequestInit = {}
   ): Promise<T> {
-    if (!this.token) {
+    const token = await authManager.getToken()
+    if (!token) {
       throw new Error('Not authenticated')
     }
 
     const url = `${this.baseUrl}${path}`
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${this.token}`,
+      Authorization: `Bearer ${token}`,
       'X-Extension-Version':
         typeof chrome !== 'undefined'
           ? (chrome.runtime?.getManifest?.()?.version ?? '0.0.0')

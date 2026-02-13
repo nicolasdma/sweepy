@@ -1,58 +1,90 @@
 /**
  * ISOLATED world content script.
  * Bridge between MAIN world (gmail.js) and Service Worker.
- * Cannot access page JS context but can use chrome.runtime.
+ * Cannot access page JS context but can use chrome.runtime APIs.
+ *
+ * Responsibilities:
+ * 1. Inject the MAIN world script into the page
+ * 2. Forward messages from MAIN world -> Service Worker
+ * 3. Forward messages from Service Worker -> MAIN world
+ * 4. Validate message origins
  */
 
 const EXTENSION_VERSION = chrome.runtime.getManifest().version
 
-// Listen for messages from MAIN world (via window.postMessage)
-window.addEventListener('message', (event) => {
+// Track whether main world script has reported ready
+let mainWorldReady = false
+
+// ---------------------------------------------------------------------------
+// Message forwarding: MAIN world -> Service Worker
+// ---------------------------------------------------------------------------
+
+window.addEventListener('message', (event: MessageEvent) => {
+  // Origin validation: only accept messages from the same window
   if (event.source !== window) return
+  // Source validation: only accept messages from our main world script
   if (event.data?.source !== 'sweepy-main') return
 
   const message = event.data
 
-  // Forward to service worker with correlation ID preserved
+  // Track readiness
+  if (message.type === 'READY') {
+    mainWorldReady = true
+    console.log('[Sweepy:Isolated] Main world script is ready')
+  }
+
+  if (message.type === 'HEALTH_CHECK_FAILED') {
+    console.warn('[Sweepy:Isolated] Main world health check failed:', message.payload?.error)
+  }
+
+  // Forward to service worker with isolated metadata
   chrome.runtime
     .sendMessage({
       ...message,
       source: 'isolated',
       version: EXTENSION_VERSION,
     })
-    .catch((error) => {
-      console.error('[Sweepy:Isolated] Failed to forward message:', error)
+    .catch((error: Error) => {
+      console.error('[Sweepy:Isolated] Failed to forward message to worker:', error)
     })
 })
 
-// Listen for messages from Service Worker → forward to MAIN world
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message.target === 'main') {
-    window.postMessage(
-      {
-        ...message,
-        source: 'sweepy-isolated',
-      },
-      '*'
-    )
-    sendResponse({ received: true })
+// ---------------------------------------------------------------------------
+// Message forwarding: Service Worker -> MAIN world
+// ---------------------------------------------------------------------------
+
+chrome.runtime.onMessage.addListener(
+  (
+    message: Record<string, unknown>,
+    _sender: chrome.runtime.MessageSender,
+    sendResponse: (response: unknown) => void
+  ) => {
+    // Only forward messages targeted at the main world
+    if (message.target === 'main') {
+      if (!mainWorldReady) {
+        console.warn(
+          '[Sweepy:Isolated] Received message for main world but it is not ready yet. Queuing is not supported -- message dropped:',
+          message.type
+        )
+        sendResponse({ received: false, reason: 'main_world_not_ready' })
+        return false
+      }
+
+      window.postMessage(
+        {
+          ...message,
+          source: 'sweepy-isolated',
+        },
+        '*'
+      )
+      sendResponse({ received: true })
+    }
+
+    return false
   }
-  return false
-})
+)
 
-// Inject MAIN world script
-function injectMainWorldScript() {
-  const script = document.createElement('script')
-  script.src = chrome.runtime.getURL('src/content/main-world.ts')
-  script.type = 'module'
-  document.documentElement.appendChild(script)
-  script.onload = () => script.remove()
-}
+// MAIN world script is injected automatically by Chrome via manifest content_scripts.
+// No manual injection needed.
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', injectMainWorldScript)
-} else {
-  injectMainWorldScript()
-}
-
-console.log('[Sweepy:Isolated] Content script loaded')
+console.log(`[Sweepy:Isolated] Content script loaded (v${EXTENSION_VERSION})`)

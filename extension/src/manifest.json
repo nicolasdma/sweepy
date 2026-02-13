@@ -15,6 +15,12 @@
       "js": ["src/content/isolated.ts"],
       "run_at": "document_idle",
       "world": "ISOLATED"
+    },
+    {
+      "matches": ["https://mail.google.com/*"],
+      "js": ["src/content/main-world.ts"],
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ],
   "side_panel": {
@@ -31,5 +37,6 @@
     "16": "src/assets/icon-16.png",
     "48": "src/assets/icon-48.png",
     "128": "src/assets/icon-128.png"
-  }
+  },
+  "web_accessible_resources": []
 }
