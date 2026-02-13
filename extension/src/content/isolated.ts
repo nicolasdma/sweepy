@@ -57,6 +57,7 @@ window.addEventListener('message', (event: MessageEvent) => {
   }
 
   // Forward to service worker with isolated metadata
+  console.log('[Sweepy:Isolated] Forwarding to worker:', message.type)
   chrome.runtime
     .sendMessage({
       ...message,
@@ -82,6 +83,7 @@ chrome.runtime.onMessage.addListener(
     // Only forward messages targeted at the main world
     if (message.target === 'main') {
       const msgId = message.id as string | undefined
+      console.log('[Sweepy:Isolated] Forwarding to main world:', message.type)
 
       if (!mainWorldReady) {
         console.warn(

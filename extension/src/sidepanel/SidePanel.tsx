@@ -248,21 +248,40 @@ export function SidePanel() {
 
   // Check auth state on mount
   useEffect(() => {
+    console.log('[Sweepy:SidePanel] Checking auth state on mount')
     authManager.init().then((authed) => {
+      console.log('[Sweepy:SidePanel] Auth state on mount:', authed)
       setIsAuthenticated(authed)
     })
     // Re-check auth when storage changes (e.g., after login in another tab)
     const listener = (changes: { [key: string]: chrome.storage.StorageChange }) => {
-      if (changes.sweepy_token) {
-        authManager.init().then(setIsAuthenticated)
+      if (changes['sweepy:token']) {
+        console.log('[Sweepy:SidePanel] Storage change detected for sweepy:token')
+        authManager.init().then((authed) => {
+          console.log('[Sweepy:SidePanel] Auth state after storage change:', authed)
+          setIsAuthenticated(authed)
+        })
       }
     }
     chrome.storage.session.onChanged.addListener(listener)
     return () => chrome.storage.session.onChanged.removeListener(listener)
   }, [])
 
-  const handleLogin = () => {
-    chrome.tabs.create({ url: authManager.getLoginUrl() })
+  const [loginLoading, setLoginLoading] = useState(false)
+
+  const handleLogin = async () => {
+    console.log('[Sweepy:SidePanel] Login button clicked')
+    setLoginLoading(true)
+    try {
+      await authManager.loginWithIdentity()
+      console.log('[Sweepy:SidePanel] loginWithIdentity completed')
+    } catch (error) {
+      console.error('[Sweepy:SidePanel] loginWithIdentity failed:', error)
+      // Fallback to tab-based login
+      chrome.tabs.create({ url: authManager.getLoginUrl() })
+    } finally {
+      setLoginLoading(false)
+    }
   }
 
   const handleLogout = async () => {
@@ -284,6 +303,7 @@ export function SidePanel() {
       if (!isExtensionMessage(raw)) return false
 
       const message = raw as WorkerToSidePanelMessage
+      console.log('[Sweepy:SidePanel] Received message:', message.type)
 
       switch (message.type) {
         case 'SCAN_PROGRESS':
@@ -359,6 +379,7 @@ export function SidePanel() {
   }, [])
 
   const handleScan = useCallback(async () => {
+    console.log('[Sweepy:SidePanel] Scan button clicked')
     setStatus('scanning')
     setProgress({ processed: 0, total: 0 })
     setPhase('extracting')
@@ -420,9 +441,10 @@ export function SidePanel() {
           </p>
           <button
             onClick={handleLogin}
-            className="w-full rounded-lg bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-700"
+            disabled={loginLoading}
+            className="w-full rounded-lg bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
-            Sign in with Google
+            {loginLoading ? 'Signing in...' : 'Sign in with Google'}
           </button>
         </div>
       </div>

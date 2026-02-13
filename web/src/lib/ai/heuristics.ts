@@ -534,14 +534,20 @@ export function applyHeuristicsBatch(emails: MinimalEmailData[]): {
   const resolved: CategorizationResult[] = []
   const unresolved: MinimalEmailData[] = []
 
+  const ruleHits: Record<string, number> = {}
+
   for (const email of emails) {
     const result = applyHeuristicsInternal(email)
     if (result) {
       resolved.push(result)
+      const ruleName = result.reasoning?.replace('Matched rule: ', '') ?? 'unknown'
+      ruleHits[ruleName] = (ruleHits[ruleName] ?? 0) + 1
     } else {
       unresolved.push(email)
     }
   }
+
+  console.log(`[Sweepy:Heuristics] Batch: ${resolved.length} resolved, ${unresolved.length} unresolved. Rule hits:`, ruleHits)
 
   return { resolved, unresolved }
 }

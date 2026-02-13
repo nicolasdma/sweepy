@@ -5,7 +5,7 @@ import type { MinimalEmailData } from '@shared/types/email'
 import type { EmailCategory, CategorizationResult, SuggestedAction } from '@shared/types/categories'
 
 // --- Provider configuration ---
-// Primary: OpenAI GPT-5.1-mini (replacing deprecated GPT-4o-mini)
+// Primary: OpenAI GPT-5 mini (GPT-4 family deprecated Feb 2026)
 // Fallback: Anthropic Claude Haiku 4.5 (via OpenAI-compatible API)
 
 interface LLMProvider {
@@ -19,9 +19,9 @@ interface LLMProvider {
 const primaryProvider: LLMProvider = {
   name: 'openai',
   client: new OpenAI({ apiKey: process.env.OPENAI_API_KEY }),
-  model: 'gpt-5.1-mini',
+  model: 'gpt-5-mini',
   inputCostPerMToken: 0.25,
-  outputCostPerMToken: 1.0,
+  outputCostPerMToken: 2.00,
 }
 
 const fallbackProvider: LLMProvider | null = process.env.ANTHROPIC_API_KEY
@@ -126,7 +126,7 @@ function formatEmailForLLM(email: MinimalEmailData): string {
 
 /**
  * Classify a batch of emails using LLM.
- * Primary: GPT-5.1-mini. Fallback: Claude Haiku 4.5.
+ * Primary: GPT-5 mini. Fallback: Claude Haiku 4.5.
  * Includes circuit breaker, retry, and JSON repair.
  */
 export async function classifyWithLLM(

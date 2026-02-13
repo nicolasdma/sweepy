@@ -4,8 +4,10 @@
   "private": true,
   "description": "AI Email Management Agent",
   "scripts": {
+    "dev": "npm run build:ext && npm run dev:web",
     "dev:web": "npm run dev --prefix web",
     "dev:ext": "npm run dev --prefix extension",
+    "clean:ext": "rm -rf extension/dist",
     "build:web": "npm run build --prefix web",
     "build:ext": "npm run build --prefix extension",
     "lint": "npm run lint --prefix web && npm run lint --prefix extension",

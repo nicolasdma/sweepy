@@ -15,6 +15,9 @@ import type { AnalyzeResponse } from '@shared/types/api'
 // ── Message bus instance ─────────────────────────────────────────
 const messageBus = new MessageBus('worker')
 
+// ── Gmail readiness tracking per tab ─────────────────────────────
+const gmailReadyTabs = new Map<number, boolean>()
+
 // ── In-memory scan state ─────────────────────────────────────────
 let scanState: ScanState = { ...INITIAL_SCAN_STATE }
 
@@ -124,6 +127,7 @@ async function analyzeEmails(emails: MinimalEmailData[]): Promise<{
 
   // Send to API in batches of API_BATCH_SIZE
   const totalBatches = Math.ceil(emails.length / API_BATCH_SIZE)
+  console.log(`[Sweepy:Worker] Analyzing ${emails.length} emails in ${totalBatches} batches`)
 
   for (let i = 0; i < totalBatches; i++) {
     const batch = emails.slice(i * API_BATCH_SIZE, (i + 1) * API_BATCH_SIZE)
@@ -194,8 +198,13 @@ async function startExtraction(
     console.warn('[Sweepy:Worker] Content script not responding, injecting...')
     try {
       await injectContentScriptsIntoGmailTabs()
-      // Wait for gmail.js to initialize
-      await new Promise((r) => setTimeout(r, 3000))
+      // Wait for gmail.js to signal readiness (event-based, up to 15s)
+      const ready = await waitForGmailReady(gmailTabId, 15_000)
+      if (ready) {
+        console.log('[Sweepy:Worker] Gmail script ready after injection')
+      } else {
+        console.warn('[Sweepy:Worker] Gmail script did not signal ready within timeout')
+      }
 
       await messageBus.sendToTab(gmailTabId, {
         type: 'START_EMAIL_EXTRACTION',
@@ -225,12 +234,15 @@ async function startExtraction(
 // Side panel requests a scan
 messageBus.on('REQUEST_SCAN', async (message, _sender) => {
   const msg = message as Extract<SidePanelMessage, { type: 'REQUEST_SCAN' }>
+  console.log('[Sweepy:Worker] REQUEST_SCAN received, payload:', msg.payload)
 
   if (scanState.status === 'scanning') {
+    console.warn('[Sweepy:Worker] Scan already in progress, rejecting')
     return { error: 'A scan is already in progress' }
   }
 
   const gmailTabId = await findGmailTab()
+  console.log('[Sweepy:Worker] Gmail tab ID:', gmailTabId)
   if (gmailTabId === null) {
     await messageBus.broadcast({
       type: 'SCAN_ERROR',
@@ -331,10 +343,11 @@ messageBus.on('EXTRACTION_RESULT', async (message) => {
   if (scanState.status !== 'scanning') return
 
   const emails = msg.payload.emails
-  console.log(`[Sweepy:Worker] Extraction complete: ${emails.length} emails. Starting analysis...`)
+  console.log(`[Sweepy:Worker] EXTRACTION_RESULT received: ${emails.length} emails`)
 
   // Check if user is authenticated before calling API
   const isAuth = await authManager.init()
+  console.log('[Sweepy:Worker] Auth check before API call:', isAuth)
   if (!isAuth) {
     // No auth — still complete the scan but with empty results
     // The side panel will show a message about needing to log in
@@ -414,9 +427,13 @@ messageBus.on('EXTRACTION_ERROR', async (message) => {
 // Gmail content script is ready
 messageBus.on('GMAIL_READY', async (message, sender) => {
   const msg = message as Extract<ContentToWorkerMessage, { type: 'GMAIL_READY' }>
+  const tabId = sender?.tab?.id
   console.log(
-    `[Sweepy:Worker] Gmail content script ready on tab ${sender?.tab?.id} for ${msg.payload.userEmail}`,
+    `[Sweepy:Worker] Gmail content script ready on tab ${tabId} for ${msg.payload.userEmail}`,
   )
+  if (tabId != null) {
+    gmailReadyTabs.set(tabId, true)
+  }
 })
 
 // Gmail health check failed
@@ -455,6 +472,38 @@ async function injectContentScriptsIntoGmailTabs(): Promise<void> {
       console.warn(`[Sweepy] Could not inject into tab ${tab.id}:`, error)
     }
   }
+}
+
+// ── Clean up readiness tracking when tabs close ──────────────────
+chrome.tabs.onRemoved.addListener((tabId) => {
+  gmailReadyTabs.delete(tabId)
+})
+
+// ── Wait for a specific tab to signal GMAIL_READY ────────────────
+function waitForGmailReady(tabId: number, timeoutMs = 15_000): Promise<boolean> {
+  // Already ready — resolve immediately
+  if (gmailReadyTabs.has(tabId)) return Promise.resolve(true)
+
+  return new Promise((resolve) => {
+    const handler = (message: ContentToWorkerMessage, sender: chrome.runtime.MessageSender) => {
+      if (message.type === 'GMAIL_READY' && sender?.tab?.id === tabId) {
+        cleanup()
+        resolve(true)
+      }
+    }
+
+    const timer = setTimeout(() => {
+      cleanup()
+      resolve(false)
+    }, timeoutMs)
+
+    function cleanup() {
+      clearTimeout(timer)
+      chrome.runtime.onMessage.removeListener(handler)
+    }
+
+    chrome.runtime.onMessage.addListener(handler)
+  })
 }
 
 // ── Chrome event listeners ───────────────────────────────────────
@@ -497,10 +546,8 @@ chrome.tabs.onUpdated.addListener((tabId, _changeInfo, tab) => {
 // Route all incoming messages through the bus
 messageBus.listen()
 
-// Handle extension install/update — log only.
-// Content scripts are injected via manifest for fresh page loads.
-// For tabs already open, the REQUEST_SCAN handler retries with
-// programmatic injection if the content script doesn't respond.
+// Handle extension install/update — proactively inject content scripts
+// into any existing Gmail tabs so the user doesn't need to reload them.
 chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'install') {
     console.log('[Sweepy] Extension installed')
@@ -509,6 +556,8 @@ chrome.runtime.onInstalled.addListener((details) => {
       `[Sweepy] Extension updated to ${chrome.runtime.getManifest().version}`,
     )
   }
+  // Inject into existing Gmail tabs on install or update
+  injectContentScriptsIntoGmailTabs()
 })
 
 // ── Initialization ───────────────────────────────────────────────

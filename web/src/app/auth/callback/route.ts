@@ -22,10 +22,26 @@ function generateExtensionToken(userId: string, email: string): string {
   return `${header}.${payload}.${signature}`
 }
 
+/**
+ * Validate that a redirect_uri is a valid Chrome extension callback URL.
+ * Only allows *.chromiumapp.org URLs (used by chrome.identity).
+ */
+function isValidExtensionRedirectUri(uri: string): boolean {
+  try {
+    const url = new URL(uri)
+    return url.hostname.endsWith('.chromiumapp.org')
+  } catch {
+    return false
+  }
+}
+
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get('code')
   const from = searchParams.get('from')
+  const redirectUri = searchParams.get('redirect_uri')
+
+  console.log('[Sweepy:AuthCallback] Received callback — from:', from, 'has code:', !!code, 'redirect_uri:', redirectUri)
 
   if (code) {
     const supabase = await createServerSupabaseClient()
@@ -38,7 +54,7 @@ export async function GET(request: Request) {
         return NextResponse.redirect(`${origin}${next}`)
       }
 
-      // Extension login → generate token and redirect with hash
+      // Extension login → generate token
       try {
         const { data: { user } } = await supabase.auth.getUser()
         if (user?.id && user?.email) {
@@ -47,14 +63,26 @@ export async function GET(request: Request) {
             token,
             expiresIn: String(TOKEN_EXPIRY_SECONDS),
           })
+
+          // If redirect_uri is a valid chrome.identity callback, redirect there
+          if (redirectUri && isValidExtensionRedirectUri(redirectUri)) {
+            const target = `${redirectUri}#${params.toString()}`
+            console.log('[Sweepy:AuthCallback] Redirecting to chrome.identity callback')
+            return NextResponse.redirect(target)
+          }
+
+          // Fallback: redirect to extension-callback page (tab-based flow)
+          console.log('[Sweepy:AuthCallback] Redirecting to /extension-callback')
           return NextResponse.redirect(`${origin}/extension-callback#${params.toString()}`)
         }
       } catch (err) {
-        console.error('[AuthCallback] Failed to generate extension token:', err)
+        console.error('[Sweepy:AuthCallback] Failed to generate extension token:', err)
       }
 
       // Fallback: redirect to extension-callback without token (will show error)
       return NextResponse.redirect(`${origin}/extension-callback#error=token_generation_failed`)
+    } else {
+      console.error('[Sweepy:AuthCallback] Code exchange failed:', error.message)
     }
   }
 

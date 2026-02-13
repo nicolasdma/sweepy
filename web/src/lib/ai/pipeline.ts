@@ -38,6 +38,8 @@ export async function categorizeEmails(
     llmCostUsd: 0,
   }
 
+  console.log(`[Sweepy:Pipeline] Starting categorization for ${emails.length} emails, userId: ${userId}`)
+
   if (emails.length === 0) {
     return { results: allResults, stats }
   }
@@ -48,6 +50,7 @@ export async function categorizeEmails(
 
   allResults.push(...heuristicResolved)
   stats.resolvedByHeuristic = heuristicResolved.length
+  console.log(`[Sweepy:Pipeline] Layer 1 (Heuristics): resolved ${heuristicResolved.length}, unresolved ${afterHeuristics.length}`)
 
   // Cache heuristic results for future lookups
   for (const result of heuristicResolved) {
@@ -93,6 +96,8 @@ export async function categorizeEmails(
     }
   }
 
+  console.log(`[Sweepy:Pipeline] Layer 2 (Cache): resolved ${stats.resolvedByCache}, unresolved ${afterCache.length}`)
+
   if (afterCache.length === 0) {
     return { results: allResults, stats }
   }
@@ -121,6 +126,9 @@ export async function categorizeEmails(
       }
     }
   }
+
+  console.log(`[Sweepy:Pipeline] Layer 3 (LLM): resolved ${stats.resolvedByLlm}, cost $${stats.llmCostUsd.toFixed(4)}`)
+  console.log(`[Sweepy:Pipeline] Complete — total: ${allResults.length}, heuristic: ${stats.resolvedByHeuristic}, cache: ${stats.resolvedByCache}, llm: ${stats.resolvedByLlm}`)
 
   return { results: allResults, stats }
 }

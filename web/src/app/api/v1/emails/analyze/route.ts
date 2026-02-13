@@ -57,6 +57,7 @@ export async function POST(request: NextRequest) {
 
   const parsed = AnalyzeRequestSchema.safeParse(body)
   if (!parsed.success) {
+    console.error('[Sweepy:Analyze] Validation failed:', JSON.stringify(parsed.error.flatten(), null, 2))
     return NextResponse.json(
       {
         error: 'Invalid request data',
@@ -68,6 +69,7 @@ export async function POST(request: NextRequest) {
   }
 
   const { emails } = parsed.data
+  console.log(`[Sweepy:Analyze] Received ${emails.length} emails from user ${auth.userId}`)
 
   if (emails.length === 0) {
     return NextResponse.json({
@@ -105,7 +107,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Run pipeline
+    console.log(`[Sweepy:Analyze] Running pipeline for scan ${scan.id}`)
     const { results, stats } = await categorizeEmails(emails, auth.userId)
+    console.log(`[Sweepy:Analyze] Pipeline complete — ${results.length} results, heuristic: ${stats.resolvedByHeuristic}, cache: ${stats.resolvedByCache}, llm: ${stats.resolvedByLlm}`)
 
     // Update scan record with results
     await supabase

@@ -34,10 +34,13 @@ class ApiClient {
   ): Promise<T> {
     const token = await authManager.getToken()
     if (!token) {
+      console.error('[Sweepy:API] Not authenticated — no token available')
       throw new Error('Not authenticated')
     }
 
     const url = `${this.baseUrl}${path}`
+    console.log(`[Sweepy:API] ${options.method ?? 'GET'} ${url}`)
+
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
@@ -60,9 +63,11 @@ class ApiClient {
         error: 'Unknown error',
         code: 'UNKNOWN',
       }))
+      console.error(`[Sweepy:API] ${url} responded ${response.status}:`, error)
       throw new ApiRequestError(response.status, error)
     }
 
+    console.log(`[Sweepy:API] ${url} responded ${response.status} OK`)
     return response.json()
   }
 
