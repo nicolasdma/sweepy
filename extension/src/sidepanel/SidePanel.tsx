@@ -2,39 +2,11 @@ import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { MessageBus } from '@/lib/message-bus'
 import type {
   ScanStatus,
+  ScanStats,
   WorkerToSidePanelMessage,
 } from '@shared/types/messages'
 import { isExtensionMessage } from '@shared/types/messages'
-
-// Set to false before production builds to strip the dev toggle
-const __DEV__ = true
-
-type EmailCategory =
-  | 'newsletter'
-  | 'marketing'
-  | 'transactional'
-  | 'social'
-  | 'notification'
-  | 'spam'
-  | 'personal'
-  | 'important'
-  | 'unknown'
-
-type ResolutionMethod = 'heuristic' | 'cache' | 'llm'
-
-interface ClassifiedEmail {
-  id: string
-  sender: string
-  subject: string
-  category: EmailCategory
-  confidence: number
-  resolvedBy: ResolutionMethod
-}
-
-interface ScanResults {
-  emails: ClassifiedEmail[]
-  scannedAt: number
-}
+import type { ClassifiedEmail, EmailCategory, CategorizationSource } from '@shared/types/categories'
 
 // ---------- Category config ----------
 
@@ -43,147 +15,59 @@ const CATEGORY_CONFIG: Record<
   { emoji: string; label: string; colorClasses: string; badgeBg: string }
 > = {
   spam: {
-    emoji: '🚫',
+    emoji: '\u{1F6AB}',
     label: 'Spam',
     colorClasses: 'text-red-700 bg-red-50 border-red-200',
     badgeBg: 'bg-red-100 text-red-700',
   },
   marketing: {
-    emoji: '📢',
+    emoji: '\u{1F4E2}',
     label: 'Marketing',
     colorClasses: 'text-yellow-700 bg-yellow-50 border-yellow-200',
     badgeBg: 'bg-yellow-100 text-yellow-700',
   },
   newsletter: {
-    emoji: '📰',
+    emoji: '\u{1F4F0}',
     label: 'Newsletter',
     colorClasses: 'text-yellow-700 bg-yellow-50 border-yellow-200',
     badgeBg: 'bg-yellow-100 text-yellow-700',
   },
   personal: {
-    emoji: '💬',
+    emoji: '\u{1F4AC}',
     label: 'Personal',
     colorClasses: 'text-green-700 bg-green-50 border-green-200',
     badgeBg: 'bg-green-100 text-green-700',
   },
   important: {
-    emoji: '⭐',
+    emoji: '\u{2B50}',
     label: 'Important',
     colorClasses: 'text-green-700 bg-green-50 border-green-200',
     badgeBg: 'bg-green-100 text-green-700',
   },
   transactional: {
-    emoji: '🧾',
+    emoji: '\u{1F9FE}',
     label: 'Transactional',
     colorClasses: 'text-gray-700 bg-gray-50 border-gray-200',
     badgeBg: 'bg-gray-100 text-gray-700',
   },
   social: {
-    emoji: '👥',
+    emoji: '\u{1F465}',
     label: 'Social',
     colorClasses: 'text-gray-700 bg-gray-50 border-gray-200',
     badgeBg: 'bg-gray-100 text-gray-700',
   },
   notification: {
-    emoji: '🔔',
+    emoji: '\u{1F514}',
     label: 'Notification',
     colorClasses: 'text-gray-700 bg-gray-50 border-gray-200',
     badgeBg: 'bg-gray-100 text-gray-700',
   },
   unknown: {
-    emoji: '❓',
+    emoji: '\u{2753}',
     label: 'Unknown',
     colorClasses: 'text-gray-700 bg-gray-50 border-gray-200',
     badgeBg: 'bg-gray-100 text-gray-700',
   },
-}
-
-// ---------- Mock data ----------
-
-const MOCK_RESULTS: ScanResults = {
-  scannedAt: Date.now(),
-  emails: [
-    {
-      id: '1',
-      sender: 'newsletter@techcrunch.com',
-      subject: 'This Week in AI: OpenAI launches new model',
-      category: 'newsletter',
-      confidence: 0.95,
-      resolvedBy: 'heuristic',
-    },
-    {
-      id: '2',
-      sender: 'digest@substack.com',
-      subject: 'Your weekly Substack digest',
-      category: 'newsletter',
-      confidence: 0.91,
-      resolvedBy: 'heuristic',
-    },
-    {
-      id: '3',
-      sender: 'promo@shopify-store.com',
-      subject: '50% OFF everything — ends tonight!',
-      category: 'marketing',
-      confidence: 0.97,
-      resolvedBy: 'heuristic',
-    },
-    {
-      id: '4',
-      sender: 'deals@amazon.com',
-      subject: 'Lightning deals just for you',
-      category: 'marketing',
-      confidence: 0.88,
-      resolvedBy: 'cache',
-    },
-    {
-      id: '5',
-      sender: 'noreply@github.com',
-      subject: '[sweepy] PR #42 merged: Add scan progress bar',
-      category: 'notification',
-      confidence: 0.93,
-      resolvedBy: 'heuristic',
-    },
-    {
-      id: '6',
-      sender: 'no-reply@accounts.google.com',
-      subject: 'Security alert: new sign-in from Chrome on Mac',
-      category: 'transactional',
-      confidence: 0.89,
-      resolvedBy: 'llm',
-    },
-    {
-      id: '7',
-      sender: 'spam-king@totallylegit.biz',
-      subject: 'You won $1,000,000!!! Click here NOW',
-      category: 'spam',
-      confidence: 0.99,
-      resolvedBy: 'heuristic',
-    },
-    {
-      id: '8',
-      sender: 'h4cker@cheap-meds.ru',
-      subject: 'Congrats!! Claim your prize immediately',
-      category: 'spam',
-      confidence: 0.96,
-      resolvedBy: 'llm',
-    },
-    {
-      id: '9',
-      sender: 'maria.garcia@gmail.com',
-      subject: 'Re: Dinner plans for Saturday?',
-      category: 'personal',
-      confidence: 0.85,
-      resolvedBy: 'llm',
-    },
-    {
-      id: '10',
-      sender: 'boss@company.com',
-      subject: 'Q1 review — action items for your team',
-      category: 'important',
-      confidence: 0.82,
-      resolvedBy: 'llm',
-    },
-  ],
 }
 
 // ---------- Helpers ----------
@@ -200,13 +84,14 @@ function groupByCategory(emails: ClassifiedEmail[]) {
 }
 
 function countByResolution(emails: ClassifiedEmail[]) {
-  const counts: Record<ResolutionMethod, number> = {
+  const counts: Record<CategorizationSource, number> = {
     heuristic: 0,
     cache: 0,
     llm: 0,
+    user_override: 0,
   }
   for (const email of emails) {
-    counts[email.resolvedBy]++
+    counts[email.categorizedBy]++
   }
   return counts
 }
@@ -237,8 +122,13 @@ const CATEGORY_ORDER: EmailCategory[] = [
 
 // ---------- Sub-components ----------
 
-function SummaryStats({ emails }: { emails: ClassifiedEmail[] }) {
-  const resolution = countByResolution(emails)
+function SummaryStats({ emails, stats }: { emails: ClassifiedEmail[]; stats: ScanStats | null }) {
+  const resolution = stats ?? {
+    total: emails.length,
+    resolvedByHeuristic: countByResolution(emails).heuristic,
+    resolvedByCache: countByResolution(emails).cache,
+    resolvedByLlm: countByResolution(emails).llm,
+  }
   const cleanupCount = getCleanupCount(emails)
 
   return (
@@ -249,11 +139,11 @@ function SummaryStats({ emails }: { emails: ClassifiedEmail[] }) {
           {emails.length} emails scanned
         </p>
         <div className="mt-1 flex gap-3 text-xs text-blue-600">
-          {resolution.heuristic > 0 && (
-            <span>Heuristic: {resolution.heuristic}</span>
+          {resolution.resolvedByHeuristic > 0 && (
+            <span>Heuristic: {resolution.resolvedByHeuristic}</span>
           )}
-          {resolution.cache > 0 && <span>Cache: {resolution.cache}</span>}
-          {resolution.llm > 0 && <span>LLM: {resolution.llm}</span>}
+          {resolution.resolvedByCache > 0 && <span>Cache: {resolution.resolvedByCache}</span>}
+          {resolution.resolvedByLlm > 0 && <span>LLM: {resolution.resolvedByLlm}</span>}
         </div>
       </div>
 
@@ -319,13 +209,13 @@ function CategorySection({
         <ul className="border-t border-inherit">
           {emails.map((email) => (
             <li
-              key={email.id}
+              key={email.emailId}
               className="border-b border-inherit px-3 py-2 last:border-b-0"
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-xs font-medium text-gray-900">
-                    {email.sender}
+                    {email.sender.name || email.sender.address}
                   </p>
                   <p className="mt-0.5 truncate text-xs text-gray-500">
                     {email.subject}
@@ -348,7 +238,9 @@ function CategorySection({
 export function SidePanel() {
   const [status, setStatus] = useState<ScanStatus>('idle')
   const [progress, setProgress] = useState({ processed: 0, total: 0 })
-  const [results] = useState<ScanResults>(MOCK_RESULTS)
+  const [phase, setPhase] = useState<'extracting' | 'analyzing'>('extracting')
+  const [results, setResults] = useState<ClassifiedEmail[]>([])
+  const [stats, setStats] = useState<ScanStats | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const messageBusRef = useRef<MessageBus | null>(null)
 
@@ -373,11 +265,13 @@ export function SidePanel() {
             processed: message.payload.processed,
             total: message.payload.total,
           })
+          setPhase(message.payload.phase)
           break
 
         case 'SCAN_COMPLETE':
           setStatus('complete')
-          // TODO: Use message.payload.results when API integration is ready
+          setResults(message.payload.results)
+          setStats(message.payload.stats)
           break
 
         case 'SCAN_ERROR':
@@ -413,11 +307,15 @@ export function SidePanel() {
         const state = response as {
           status: ScanStatus
           progress: { processed: number; total: number } | null
+          results: ClassifiedEmail[] | null
           error: string | null
         }
         setStatus(state.status)
         if (state.progress) {
           setProgress(state.progress)
+        }
+        if (state.results) {
+          setResults(state.results)
         }
         if (state.error) {
           setErrorMessage(state.error)
@@ -437,7 +335,10 @@ export function SidePanel() {
   const handleScan = useCallback(async () => {
     setStatus('scanning')
     setProgress({ processed: 0, total: 0 })
+    setPhase('extracting')
     setErrorMessage(null)
+    setResults([])
+    setStats(null)
 
     try {
       await messageBusRef.current?.sendToWorker({
@@ -461,7 +362,7 @@ export function SidePanel() {
     }
   }, [])
 
-  const grouped = groupByCategory(results.emails)
+  const grouped = groupByCategory(results)
 
   return (
     <div className="min-h-screen bg-white p-4">
@@ -473,19 +374,6 @@ export function SidePanel() {
             Phase 1
           </span>
         </div>
-
-        {/* Dev toggle */}
-        {__DEV__ && (
-          <button
-            onClick={() =>
-              setStatus((s) => (s === 'idle' ? 'complete' : 'idle'))
-            }
-            className="rounded border border-dashed border-gray-300 px-2 py-0.5 text-[10px] text-gray-400 hover:border-gray-400 hover:text-gray-600"
-            title="Toggle idle/complete (dev only)"
-          >
-            {status === 'complete' ? 'DEV: idle' : 'DEV: results'}
-          </button>
-        )}
       </div>
 
       {/* Idle state */}
@@ -511,14 +399,20 @@ export function SidePanel() {
       {status === 'scanning' && (
         <div className="py-8">
           <div className="mb-2 flex items-center justify-between text-sm">
-            <span className="text-gray-600">Scanning...</span>
+            <span className="text-gray-600">
+              {phase === 'extracting' ? 'Extracting emails...' : 'Analyzing with AI...'}
+            </span>
             <span className="text-gray-500">
-              {progress.processed} / {progress.total}
+              {progress.total > 0
+                ? `${progress.processed} / ${progress.total}`
+                : 'Starting...'}
             </span>
           </div>
           <div className="h-2 rounded-full bg-gray-200">
             <div
-              className="h-2 rounded-full bg-blue-600 transition-all"
+              className={`h-2 rounded-full transition-all ${
+                phase === 'analyzing' ? 'bg-purple-600' : 'bg-blue-600'
+              }`}
               style={{
                 width:
                   progress.total > 0
@@ -527,6 +421,11 @@ export function SidePanel() {
               }}
             />
           </div>
+          <p className="mt-1 text-xs text-gray-400">
+            {phase === 'extracting'
+              ? 'Reading your emails from Gmail...'
+              : 'Running AI categorization pipeline...'}
+          </p>
           <button
             onClick={handleCancel}
             className="mt-3 w-full rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
@@ -558,25 +457,39 @@ export function SidePanel() {
       {/* Complete state — results */}
       {status === 'complete' && (
         <div>
-          {/* Summary stats */}
-          <SummaryStats emails={results.emails} />
+          {results.length === 0 ? (
+            <div className="py-8 text-center">
+              <p className="text-sm text-gray-600">
+                No emails found to categorize. Try adjusting the scan settings.
+              </p>
+            </div>
+          ) : (
+            <>
+              {/* Summary stats */}
+              <SummaryStats emails={results} stats={stats} />
 
-          {/* Category groups */}
-          <div>
-            {CATEGORY_ORDER.filter((cat) => grouped[cat]?.length).map(
-              (cat) => (
-                <CategorySection
-                  key={cat}
-                  category={cat}
-                  emails={grouped[cat]!}
-                />
-              ),
-            )}
-          </div>
+              {/* Category groups */}
+              <div>
+                {CATEGORY_ORDER.filter((cat) => grouped[cat]?.length).map(
+                  (cat) => (
+                    <CategorySection
+                      key={cat}
+                      category={cat}
+                      emails={grouped[cat]!}
+                    />
+                  ),
+                )}
+              </div>
+            </>
+          )}
 
           {/* Scan again */}
           <button
-            onClick={() => setStatus('idle')}
+            onClick={() => {
+              setStatus('idle')
+              setResults([])
+              setStats(null)
+            }}
             className="mt-4 w-full rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
           >
             Scan Again

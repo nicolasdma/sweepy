@@ -1,11 +1,16 @@
-import { MessageBus, createMessage } from '@/lib/message-bus'
+import { MessageBus } from '@/lib/message-bus'
+import { apiClient, ApiRequestError } from '@/lib/api-client'
+import { authManager } from '@/lib/auth'
 import type {
   ScanState,
   SidePanelMessage,
   ContentToWorkerMessage,
-  ExtensionMessage,
+  ScanStats,
 } from '@shared/types/messages'
 import { INITIAL_SCAN_STATE } from '@shared/types/messages'
+import type { ClassifiedEmail } from '@shared/types/categories'
+import type { MinimalEmailData } from '@shared/types/email'
+import type { AnalyzeResponse } from '@shared/types/api'
 
 // ── Message bus instance ─────────────────────────────────────────
 const messageBus = new MessageBus('worker')
@@ -88,6 +93,86 @@ function stopKeepAlive(): void {
   }
 }
 
+// ── API batch size (matches backend limit of 50 emails per request) ─
+const API_BATCH_SIZE = 50
+
+// ── Send emails to backend API for classification ────────────────
+async function analyzeEmails(emails: MinimalEmailData[]): Promise<{
+  classified: ClassifiedEmail[]
+  stats: ScanStats
+}> {
+  if (emails.length === 0) {
+    return {
+      classified: [],
+      stats: { total: 0, resolvedByHeuristic: 0, resolvedByCache: 0, resolvedByLlm: 0 },
+    }
+  }
+
+  // Build a lookup map for email metadata (needed to merge with categorization results)
+  const emailMap = new Map<string, MinimalEmailData>()
+  for (const email of emails) {
+    emailMap.set(email.id, email)
+  }
+
+  const allClassified: ClassifiedEmail[] = []
+  const aggregateStats: ScanStats = {
+    total: 0,
+    resolvedByHeuristic: 0,
+    resolvedByCache: 0,
+    resolvedByLlm: 0,
+  }
+
+  // Send to API in batches of API_BATCH_SIZE
+  const totalBatches = Math.ceil(emails.length / API_BATCH_SIZE)
+
+  for (let i = 0; i < totalBatches; i++) {
+    const batch = emails.slice(i * API_BATCH_SIZE, (i + 1) * API_BATCH_SIZE)
+
+    // Broadcast analyzing progress
+    await messageBus.broadcast({
+      type: 'SCAN_PROGRESS',
+      payload: {
+        processed: i * API_BATCH_SIZE,
+        total: emails.length,
+        phase: 'analyzing' as const,
+      },
+    })
+
+    const response: AnalyzeResponse = await apiClient.analyzeEmails({
+      emails: batch,
+    })
+
+    // Merge categorization results with email metadata
+    for (const result of response.results) {
+      const email = emailMap.get(result.emailId)
+      if (!email) continue
+
+      allClassified.push({
+        emailId: result.emailId,
+        threadId: email.threadId,
+        sender: email.from,
+        subject: email.subject,
+        snippet: email.snippet,
+        date: email.date,
+        isRead: email.isRead,
+        category: result.category,
+        confidence: result.confidence,
+        categorizedBy: result.source,
+        reasoning: result.reasoning,
+        suggestedActions: result.suggestedActions,
+      })
+    }
+
+    // Aggregate stats
+    aggregateStats.total += response.stats.total
+    aggregateStats.resolvedByHeuristic += response.stats.resolvedByHeuristic
+    aggregateStats.resolvedByCache += response.stats.resolvedByCache
+    aggregateStats.resolvedByLlm += response.stats.resolvedByLlm
+  }
+
+  return { classified: allClassified, stats: aggregateStats }
+}
+
 // ── Message handlers ─────────────────────────────────────────────
 
 // Side panel requests a scan
@@ -100,7 +185,6 @@ messageBus.on('REQUEST_SCAN', async (message, _sender) => {
 
   const gmailTabId = await findGmailTab()
   if (gmailTabId === null) {
-    // Notify the side panel about the error
     await messageBus.broadcast({
       type: 'SCAN_ERROR',
       payload: { error: 'No Gmail tab found. Please open Gmail and try again.' },
@@ -132,7 +216,7 @@ messageBus.on('REQUEST_SCAN', async (message, _sender) => {
         maxDays: msg.payload.maxDays,
       },
       target: 'main',
-    }, 10_000) // 10s timeout for content script to acknowledge
+    }, 10_000)
   } catch (error) {
     scanState.status = 'error'
     scanState.error = error instanceof Error ? error.message : 'Failed to reach content script'
@@ -206,33 +290,81 @@ messageBus.on('EXTRACTION_PROGRESS', async (message) => {
     payload: {
       processed: msg.payload.processed,
       total: msg.payload.total,
-      phase: 'extracting',
+      phase: 'extracting' as const,
     },
   })
 })
 
-// Content script finished extraction
+// Content script finished extraction — now send to API for classification
 messageBus.on('EXTRACTION_RESULT', async (message) => {
   const msg = message as Extract<ContentToWorkerMessage, { type: 'EXTRACTION_RESULT' }>
 
   if (scanState.status !== 'scanning') return
 
-  // TODO: In the future, send emails to the API for classification.
-  // For now, mark the scan as complete with the raw extraction data.
-  scanState.status = 'complete'
-  scanState.results = [] // Will be populated when API integration is added
-  await persistScanState()
-  stopKeepAlive()
+  const emails = msg.payload.emails
+  console.log(`[Sweepy:Worker] Extraction complete: ${emails.length} emails. Starting analysis...`)
 
-  await messageBus.broadcast({
-    type: 'SCAN_COMPLETE',
-    payload: {
-      scanId: scanState.scanId!,
-      results: [],
-    },
-  })
+  // Check if user is authenticated before calling API
+  const isAuth = await authManager.init()
+  if (!isAuth) {
+    // No auth — still complete the scan but with empty results
+    // The side panel will show a message about needing to log in
+    scanState.status = 'error'
+    scanState.error = 'Please log in to analyze emails. Open the Sweepy popup to sign in.'
+    await persistScanState()
+    stopKeepAlive()
 
-  console.log(`[Sweepy:Worker] Extraction complete: ${msg.payload.emails.length} emails`)
+    await messageBus.broadcast({
+      type: 'SCAN_ERROR',
+      payload: { error: scanState.error },
+    })
+    return
+  }
+
+  try {
+    const { classified, stats } = await analyzeEmails(emails)
+
+    scanState.status = 'complete'
+    scanState.results = classified
+    await persistScanState()
+    stopKeepAlive()
+
+    await messageBus.broadcast({
+      type: 'SCAN_COMPLETE',
+      payload: {
+        scanId: scanState.scanId!,
+        results: classified,
+        stats,
+      },
+    })
+
+    console.log(`[Sweepy:Worker] Analysis complete: ${classified.length} emails classified`)
+  } catch (error) {
+    console.error('[Sweepy:Worker] API analysis failed:', error)
+
+    let errorMsg = 'Failed to analyze emails'
+    if (error instanceof ApiRequestError) {
+      if (error.status === 401) {
+        errorMsg = 'Session expired. Please log in again from the Sweepy popup.'
+      } else if (error.status === 429) {
+        errorMsg = 'Rate limit exceeded. Please wait a few minutes and try again.'
+      } else {
+        errorMsg = `Analysis failed: ${error.apiError.error}`
+      }
+    } else if (error instanceof Error) {
+      errorMsg = error.message
+    }
+
+    scanState.status = 'error'
+    scanState.error = errorMsg
+    await persistScanState()
+    stopKeepAlive()
+
+    await messageBus.broadcast({
+      type: 'SCAN_ERROR',
+      payload: { error: errorMsg },
+    })
+  }
 })
 
 // Content script reports extraction error
@@ -251,10 +383,10 @@ messageBus.on('EXTRACTION_ERROR', async (message) => {
 })
 
 // Gmail content script is ready
-messageBus.on('GMAIL_READY', async (_message, sender) => {
+messageBus.on('GMAIL_READY', async (message, sender) => {
+  const msg = message as Extract<ContentToWorkerMessage, { type: 'GMAIL_READY' }>
   console.log(
-    '[Sweepy:Worker] Gmail content script ready on tab:',
-    sender?.tab?.id,
+    `[Sweepy:Worker] Gmail content script ready on tab ${sender?.tab?.id} for ${msg.payload.userEmail}`,
   )
 })
 
@@ -294,5 +426,7 @@ chrome.runtime.onInstalled.addListener((details) => {
 
 // ── Initialization ───────────────────────────────────────────────
 restoreScanState().then(() => {
-  console.log('[Sweepy] Service worker started')
+  authManager.init().then((isAuth) => {
+    console.log(`[Sweepy] Service worker started (authenticated: ${isAuth})`)
+  })
 })

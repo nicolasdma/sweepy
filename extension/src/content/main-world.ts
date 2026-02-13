@@ -3,8 +3,8 @@
  * Uses gmail.js to hook into Gmail's XHR/fetch and extract email data.
  * Communicates with ISOLATED world via window.postMessage.
  *
- * gmail.js is a CommonJS module that attaches `Gmail` to `exports`.
- * In the MAIN world bundle (processed by Vite), we import it as an ES module.
+ * Message types sent here MUST match ContentToWorkerMessage in shared/types/messages.ts.
+ * The isolated bridge forwards these to the service worker unchanged (except source/version).
  */
 
 import Gmail from 'gmail-js'
@@ -52,7 +52,7 @@ function sendToIsolated(type: string, payload?: unknown): void {
 }
 
 // ---------------------------------------------------------------------------
-// Listen for commands from ISOLATED world
+// Listen for commands from ISOLATED world (forwarded from service worker)
 // ---------------------------------------------------------------------------
 
 window.addEventListener('message', (event: MessageEvent) => {
@@ -62,7 +62,7 @@ window.addEventListener('message', (event: MessageEvent) => {
   const { type, payload } = event.data
 
   switch (type) {
-    case 'START_SCAN':
+    case 'START_EMAIL_EXTRACTION':
       handleStartScan(payload as ScanOptions)
       break
     case 'STOP_SCAN':
@@ -88,22 +88,22 @@ function initGmailJs(): void {
         const userEmail: string = gmail.get.user_email()
         if (userEmail) {
           isReady = true
-          sendToIsolated('READY', { userEmail })
+          sendToIsolated('GMAIL_READY', { userEmail })
           console.log(`[Sweepy:Main] Gmail.js ready for ${userEmail}`)
         } else {
-          sendToIsolated('HEALTH_CHECK_FAILED', {
-            error: 'Could not read user email -- gmail.js loaded but no user data',
+          sendToIsolated('GMAIL_HEALTH_CHECK_FAILED', {
+            reason: 'Could not read user email -- gmail.js loaded but no user data',
           })
         }
       } catch (error) {
-        sendToIsolated('HEALTH_CHECK_FAILED', {
-          error: error instanceof Error ? error.message : 'Unknown health check error',
+        sendToIsolated('GMAIL_HEALTH_CHECK_FAILED', {
+          reason: error instanceof Error ? error.message : 'Unknown health check error',
         })
       }
     })
   } catch (error) {
-    sendToIsolated('HEALTH_CHECK_FAILED', {
-      error: error instanceof Error ? error.message : 'Failed to initialize gmail.js',
+    sendToIsolated('GMAIL_HEALTH_CHECK_FAILED', {
+      reason: error instanceof Error ? error.message : 'Failed to initialize gmail.js',
     })
   }
 }
@@ -129,11 +129,7 @@ async function handleStartScan(options: ScanOptions): Promise<void> {
     // Get visible email thread IDs from gmail.js
     const visibleEmailIds: string[] = gmail.get.visible_emails() || []
     if (visibleEmailIds.length === 0) {
-      sendToIsolated('EMAILS_EXTRACTED', {
-        emails: [],
-        batchIndex: 0,
-        totalBatches: 0,
-      })
+      sendToIsolated('EXTRACTION_RESULT', { emails: [] })
       return
     }
 
@@ -145,6 +141,8 @@ async function handleStartScan(options: ScanOptions): Promise<void> {
     const cutoffDate = new Date()
     cutoffDate.setDate(cutoffDate.getDate() - maxDays)
 
+    // Accumulate all extracted emails across batches
+    const allEmails: MinimalEmailData[] = []
     let processed = 0
 
     for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
@@ -157,7 +155,6 @@ async function handleStartScan(options: ScanOptions): Promise<void> {
         batchIdx * BATCH_SIZE,
         (batchIdx + 1) * BATCH_SIZE
       )
-      const batchResults: MinimalEmailData[] = []
 
       for (const emailId of batchIds) {
         if (signal.aborted) return
@@ -165,33 +162,20 @@ async function handleStartScan(options: ScanOptions): Promise<void> {
         try {
           const emailData = extractSingleEmail(emailId, cutoffDate)
           if (emailData) {
-            batchResults.push(emailData)
+            allEmails.push(emailData)
           }
         } catch (error) {
           console.warn(
             `[Sweepy:Main] Failed to extract email ${emailId}:`,
             error
           )
-          sendToIsolated('EXTRACTION_ERROR', {
-            error: error instanceof Error ? error.message : 'Extraction failed',
-            emailId,
-          })
         }
 
         processed++
       }
 
-      // Send this batch to the isolated world
-      if (batchResults.length > 0) {
-        sendToIsolated('EMAILS_EXTRACTED', {
-          emails: batchResults,
-          batchIndex: batchIdx,
-          totalBatches,
-        })
-      }
-
-      // Report progress
-      sendToIsolated('SCAN_PROGRESS', {
+      // Report progress after each batch
+      sendToIsolated('EXTRACTION_PROGRESS', {
         processed,
         total: emailIds.length,
       })
@@ -201,6 +185,10 @@ async function handleStartScan(options: ScanOptions): Promise<void> {
         await sleep(100)
       }
     }
+
+    // Send all extracted emails as a single result
+    sendToIsolated('EXTRACTION_RESULT', { emails: allEmails })
+    console.log(`[Sweepy:Main] Extraction complete: ${allEmails.length} emails`)
   } catch (error) {
     sendToIsolated('EXTRACTION_ERROR', {
       error: error instanceof Error ? error.message : 'Scan failed',
@@ -242,10 +230,6 @@ function extractSingleEmail(
         : null
     if (emailDate && emailDate < cutoffDate) return null
 
-    // Try to get MIME headers via email source (async in gmail.js, but we
-    // do a best-effort extraction without blocking). Headers from the new
-    // data layer don't include List-Unsubscribe etc., so we leave those
-    // fields empty and let the MIME parser in the service worker enrich later.
     return extractEmailData(newEmailData)
   }
 

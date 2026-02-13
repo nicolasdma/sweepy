@@ -1,5 +1,5 @@
-import type { MinimalEmailData, ScanOptions } from './email'
-import type { CategorizationResult, EmailCategory } from './categories'
+import type { MinimalEmailData } from './email'
+import type { ClassifiedEmail, EmailCategory } from './categories'
 
 // ── Message sources ──────────────────────────────────────────────
 export type MessageSource = 'main' | 'isolated' | 'worker' | 'sidepanel' | 'popup'
@@ -32,23 +32,31 @@ export type WorkerToContentMessage = BaseMessage & (
 
 // ── Content Script (MAIN world via isolated bridge) → Service Worker ─
 export type ContentToWorkerMessage = BaseMessage & (
-  | { type: 'EXTRACTION_RESULT'; payload: { emails: MinimalEmailData[]; correlationId: string } }
-  | { type: 'EXTRACTION_ERROR'; payload: { error: string; correlationId: string } }
-  | { type: 'EXTRACTION_PROGRESS'; payload: { processed: number; total: number; correlationId: string } }
-  | { type: 'GMAIL_READY' }
+  | { type: 'EXTRACTION_RESULT'; payload: { emails: MinimalEmailData[] } }
+  | { type: 'EXTRACTION_ERROR'; payload: { error: string } }
+  | { type: 'EXTRACTION_PROGRESS'; payload: { processed: number; total: number } }
+  | { type: 'GMAIL_READY'; payload: { userEmail: string } }
   | { type: 'GMAIL_HEALTH_CHECK_FAILED'; payload: { reason: string } }
   | { type: 'PONG' }
 )
 
 // ── Service Worker → Side Panel (via chrome.runtime messaging) ───
 export type WorkerToSidePanelMessage = BaseMessage & (
-  | { type: 'SCAN_PROGRESS'; payload: { processed: number; total: number; phase: string } }
-  | { type: 'SCAN_COMPLETE'; payload: { scanId: string; results: CategorizationResult[] } }
+  | { type: 'SCAN_PROGRESS'; payload: { processed: number; total: number; phase: 'extracting' | 'analyzing' } }
+  | { type: 'SCAN_COMPLETE'; payload: { scanId: string; results: ClassifiedEmail[]; stats: ScanStats } }
   | { type: 'SCAN_ERROR'; payload: { error: string } }
   | { type: 'SCAN_STATUS'; payload: { status: ScanStatus; progress?: { processed: number; total: number } } }
   | { type: 'ACTION_RESULT'; payload: { actionId: string; result: 'success' | 'error'; error?: string } }
   | { type: 'VERSION_MISMATCH'; payload: { required: string; current: string } }
 )
+
+// ── Scan stats for display ───────────────────────────────────────
+export interface ScanStats {
+  total: number
+  resolvedByHeuristic: number
+  resolvedByCache: number
+  resolvedByLlm: number
+}
 
 // ── Scan status ──────────────────────────────────────────────────
 export type ScanStatus = 'idle' | 'scanning' | 'complete' | 'error'
@@ -58,7 +66,7 @@ export interface ScanState {
   status: ScanStatus
   scanId: string | null
   progress: { processed: number; total: number } | null
-  results: CategorizationResult[] | null
+  results: ClassifiedEmail[] | null
   error: string | null
   startedAt: number | null
 }

@@ -28,13 +28,13 @@ window.addEventListener('message', (event: MessageEvent) => {
   const message = event.data
 
   // Track readiness
-  if (message.type === 'READY') {
+  if (message.type === 'GMAIL_READY') {
     mainWorldReady = true
     console.log('[Sweepy:Isolated] Main world script is ready')
   }
 
-  if (message.type === 'HEALTH_CHECK_FAILED') {
-    console.warn('[Sweepy:Isolated] Main world health check failed:', message.payload?.error)
+  if (message.type === 'GMAIL_HEALTH_CHECK_FAILED') {
+    console.warn('[Sweepy:Isolated] Main world health check failed:', message.payload?.reason)
   }
 
   // Forward to service worker with isolated metadata

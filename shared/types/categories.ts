@@ -32,3 +32,19 @@ export interface SuggestedAction {
   reason: string
   priority: number // 1 (low) to 5 (high)
 }
+
+/** Combined type for display: categorization result + email metadata */
+export interface ClassifiedEmail {
+  emailId: string
+  threadId: string
+  sender: { address: string; name: string; domain: string }
+  subject: string
+  snippet: string
+  date: string
+  isRead: boolean
+  category: EmailCategory
+  confidence: number
+  categorizedBy: CategorizationSource
+  reasoning?: string
+  suggestedActions: SuggestedAction[]
+}
