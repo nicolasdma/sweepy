@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { MessageBus } from '@/lib/message-bus'
+import { authManager } from '@/lib/auth'
 import type {
   ScanStatus,
   ScanStats,
@@ -236,6 +237,7 @@ function CategorySection({
 // ---------- Main component ----------
 
 export function SidePanel() {
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null) // null = loading
   const [status, setStatus] = useState<ScanStatus>('idle')
   const [progress, setProgress] = useState({ processed: 0, total: 0 })
   const [phase, setPhase] = useState<'extracting' | 'analyzing'>('extracting')
@@ -243,6 +245,30 @@ export function SidePanel() {
   const [stats, setStats] = useState<ScanStats | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const messageBusRef = useRef<MessageBus | null>(null)
+
+  // Check auth state on mount
+  useEffect(() => {
+    authManager.init().then((authed) => {
+      setIsAuthenticated(authed)
+    })
+    // Re-check auth when storage changes (e.g., after login in another tab)
+    const listener = (changes: { [key: string]: chrome.storage.StorageChange }) => {
+      if (changes.sweepy_token) {
+        authManager.init().then(setIsAuthenticated)
+      }
+    }
+    chrome.storage.session.onChanged.addListener(listener)
+    return () => chrome.storage.session.onChanged.removeListener(listener)
+  }, [])
+
+  const handleLogin = () => {
+    chrome.tabs.create({ url: authManager.getLoginUrl() })
+  }
+
+  const handleLogout = async () => {
+    await authManager.logout()
+    setIsAuthenticated(false)
+  }
 
   // Initialize message bus and listen for worker messages
   useEffect(() => {
@@ -364,6 +390,45 @@ export function SidePanel() {
 
   const grouped = groupByCategory(results)
 
+  // Auth loading state
+  if (isAuthenticated === null) {
+    return (
+      <div className="min-h-screen bg-white p-4">
+        <h1 className="text-lg font-bold text-gray-900">Sweepy</h1>
+        <p className="mt-4 text-sm text-gray-400">Loading...</p>
+      </div>
+    )
+  }
+
+  // Not authenticated — show login
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-white p-4">
+        <h1 className="mb-1 text-lg font-bold text-gray-900">Sweepy</h1>
+        <p className="mb-6 text-xs text-gray-400">AI Email Manager</p>
+        <div className="py-8 text-center">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-blue-50">
+            <svg className="h-6 w-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" />
+            </svg>
+          </div>
+          <p className="mb-2 text-sm font-medium text-gray-900">
+            Connect your Gmail account
+          </p>
+          <p className="mb-6 text-xs text-gray-500">
+            Sign in with Google to scan and categorize your inbox with AI.
+          </p>
+          <button
+            onClick={handleLogin}
+            className="w-full rounded-lg bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-700"
+          >
+            Sign in with Google
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-white p-4">
       {/* Header */}
@@ -374,6 +439,12 @@ export function SidePanel() {
             Phase 1
           </span>
         </div>
+        <button
+          onClick={handleLogout}
+          className="text-xs text-gray-400 hover:text-gray-600"
+        >
+          Sign out
+        </button>
       </div>
 
       {/* Idle state */}

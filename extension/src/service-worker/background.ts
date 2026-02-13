@@ -447,12 +447,8 @@ async function injectContentScriptsIntoGmailTabs(): Promise<void> {
 
 // ── Chrome event listeners ───────────────────────────────────────
 
-// Open side panel when extension icon is clicked
-chrome.action.onClicked.addListener((tab) => {
-  if (tab.id) {
-    chrome.sidePanel.open({ tabId: tab.id })
-  }
-})
+// Make clicking the extension icon open the side panel directly (no popup)
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {})
 
 // Capture auth token from extension-callback page URL hash
 chrome.tabs.onUpdated.addListener((tabId, _changeInfo, tab) => {
@@ -472,12 +468,12 @@ chrome.tabs.onUpdated.addListener((tabId, _changeInfo, tab) => {
         // Close the callback tab
         chrome.tabs.remove(tabId).catch(() => {})
 
-        // Open side panel on Gmail tab automatically
+        // Focus the Gmail tab so the user can click the extension icon
+        // to open the side panel. (chrome.sidePanel.open() requires a
+        // user gesture context and doesn't work from background events.)
         const gmailTabId = await findGmailTab()
         if (gmailTabId) {
-          // Focus the Gmail tab first
           chrome.tabs.update(gmailTabId, { active: true }).catch(() => {})
-          chrome.sidePanel.open({ tabId: gmailTabId }).catch(() => {})
         }
       })
     }

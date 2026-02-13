@@ -27,7 +27,6 @@
     "default_path": "src/sidepanel/index.html"
   },
   "action": {
-    "default_popup": "src/popup/index.html",
     "default_title": "Sweepy"
   },
   "content_security_policy": {

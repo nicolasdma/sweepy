@@ -82,6 +82,26 @@ window.addEventListener('message', (event: MessageEvent) => {
 // Gmail.js initialization
 // ---------------------------------------------------------------------------
 
+/** Try to read user email from gmail.js. If successful, mark as ready. */
+function performHealthCheck(): void {
+  try {
+    const userEmail: string = gmail.get.user_email()
+    if (userEmail) {
+      isReady = true
+      sendToIsolated('GMAIL_READY', { userEmail })
+      console.log(`[Sweepy:Main] Gmail.js ready for ${userEmail}`)
+    } else {
+      sendToIsolated('GMAIL_HEALTH_CHECK_FAILED', {
+        reason: 'Could not read user email -- gmail.js loaded but no user data',
+      })
+    }
+  } catch (error) {
+    sendToIsolated('GMAIL_HEALTH_CHECK_FAILED', {
+      reason: error instanceof Error ? error.message : 'Unknown health check error',
+    })
+  }
+}
+
 function initGmailJs(): void {
   try {
     // gmail.js constructor accepts jQuery or `false` (no jQuery).
@@ -89,25 +109,21 @@ function initGmailJs(): void {
     // but keeps XHR interception and data reading -- which is all we need.
     gmail = new GmailConstructor(false)
 
+    // Normal path: gmail.js fires 'load' when it detects Gmail's initial data load.
     gmail.observe.on('load', () => {
-      try {
-        // Health check: can we read the user's email address?
-        const userEmail: string = gmail.get.user_email()
-        if (userEmail) {
-          isReady = true
-          sendToIsolated('GMAIL_READY', { userEmail })
-          console.log(`[Sweepy:Main] Gmail.js ready for ${userEmail}`)
-        } else {
-          sendToIsolated('GMAIL_HEALTH_CHECK_FAILED', {
-            reason: 'Could not read user email -- gmail.js loaded but no user data',
-          })
-        }
-      } catch (error) {
-        sendToIsolated('GMAIL_HEALTH_CHECK_FAILED', {
-          reason: error instanceof Error ? error.message : 'Unknown health check error',
-        })
-      }
+      performHealthCheck()
     })
+
+    // Fallback: if the script is injected AFTER Gmail has already loaded
+    // (e.g., programmatic injection on extension install/update),
+    // observe.on('load') won't fire because the XHR events already happened.
+    // Try a direct health check after a delay.
+    setTimeout(() => {
+      if (!isReady) {
+        console.log('[Sweepy:Main] Load event did not fire, trying direct health check...')
+        performHealthCheck()
+      }
+    }, 3000)
   } catch (error) {
     sendToIsolated('GMAIL_HEALTH_CHECK_FAILED', {
       reason: error instanceof Error ? error.message : 'Failed to initialize gmail.js',
@@ -362,6 +378,16 @@ function sleep(ms: number): Promise<void> {
 // Bootstrap
 // ---------------------------------------------------------------------------
 
-initGmailJs()
-
-console.log('[Sweepy:Main] Main world script loaded')
+// Guard against double initialization. When the extension is reloaded or
+// updated while Gmail is open, the programmatic injection may re-run this
+// script. gmail.js modifies XMLHttpRequest.prototype and running it twice
+// causes "l is not a function" errors from double-wrapped XHR hooks.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+if ((window as any).__sweepyMainWorldLoaded) {
+  console.log('[Sweepy:Main] Already initialized, skipping re-initialization')
+} else {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ;(window as any).__sweepyMainWorldLoaded = true
+  initGmailJs()
+  console.log('[Sweepy:Main] Main world script loaded')
+}
