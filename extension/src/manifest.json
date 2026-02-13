@@ -3,7 +3,7 @@
   "name": "Sweepy — AI Email Manager",
   "version": "0.1.0",
   "description": "AI-powered email categorization and inbox cleanup for Gmail",
-  "permissions": ["storage", "sidePanel", "activeTab", "scripting"],
+  "permissions": ["storage", "sidePanel", "activeTab", "scripting", "tabs"],
   "host_permissions": ["https://mail.google.com/*"],
   "background": {
     "service_worker": "src/service-worker/background.ts",

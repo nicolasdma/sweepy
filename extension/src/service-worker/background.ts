@@ -410,6 +410,30 @@ chrome.action.onClicked.addListener((tab) => {
   }
 })
 
+// Capture auth token from extension-callback page URL hash
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (!tab.url) return
+  if (!tab.url.includes('/extension-callback#')) return
+
+  try {
+    const url = new URL(tab.url)
+    const hash = url.hash.slice(1) // Remove leading #
+    const params = new URLSearchParams(hash)
+    const token = params.get('token')
+    const expiresIn = parseInt(params.get('expiresIn') ?? '86400', 10)
+
+    if (token) {
+      authManager.setToken(token, expiresIn).then(() => {
+        console.log('[Sweepy] Auth token received from web app')
+        // Close the callback tab — auth is done
+        chrome.tabs.remove(tabId).catch(() => {})
+      })
+    }
+  } catch (error) {
+    console.error('[Sweepy] Failed to parse auth callback URL:', error)
+  }
+})
+
 // Route all incoming messages through the bus
 messageBus.listen()
 
