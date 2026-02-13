@@ -43,7 +43,7 @@ function wrap(elements: Element[]): MiniJQueryCollection {
   col.find = function (sel: string) {
     const results: Element[] = []
     for (const el of elements) {
-      results.push(...Array.from(el.querySelectorAll(sel)))
+      results.push(...safeQueryAll(el, sel))
     }
     return wrap(results)
   }
@@ -156,6 +156,46 @@ function wrap(elements: Element[]): MiniJQueryCollection {
   return col
 }
 
+/**
+ * Convert jQuery pseudo-selectors to a CSS-compatible query.
+ * Returns { selector, firstOnly } where firstOnly means :first was present.
+ */
+function sanitizeSelector(sel: string): { selector: string; firstOnly: boolean } {
+  let firstOnly = false
+  let s = sel
+
+  // :first → use querySelector instead of querySelectorAll
+  if (s.includes(':first')) {
+    firstOnly = true
+    s = s.replace(/:first/g, '')
+  }
+
+  // :visible → ignore (not a CSS pseudo), just remove it
+  s = s.replace(/:visible/g, '')
+
+  // :eq(n) → handled separately in .children(), strip it here for safety
+  s = s.replace(/:eq\(\d+\)/g, '')
+
+  // Clean up any trailing/leading whitespace or commas from removal
+  s = s.replace(/,\s*,/g, ',').replace(/^[,\s]+|[,\s]+$/g, '')
+
+  return { selector: s || '*', firstOnly }
+}
+
+function safeQueryAll(root: Element | Document, sel: string): Element[] {
+  const { selector, firstOnly } = sanitizeSelector(sel)
+  try {
+    if (firstOnly) {
+      const el = root.querySelector(selector)
+      return el ? [el] : []
+    }
+    return Array.from(root.querySelectorAll(selector))
+  } catch {
+    // Invalid selector — return empty
+    return []
+  }
+}
+
 function miniJQuery(selector: any, context?: any): MiniJQueryCollection {
   if (!selector) return wrap([])
 
@@ -166,15 +206,7 @@ function miniJQuery(selector: any, context?: any): MiniJQueryCollection {
   // $("selector") or $("selector", context)
   if (typeof selector === 'string') {
     const root = context instanceof Element ? context : document
-    // Handle :first pseudo-selector
-    const cleanSel = selector.replace(/:first$/, '')
-    if (selector.endsWith(':first')) {
-      const el = root.querySelector(cleanSel)
-      return wrap(el ? [el] : [])
-    }
-    // Handle :visible pseudo (just ignore it, return all matches)
-    const visibleSel = cleanSel.replace(/:visible/g, '')
-    return wrap(Array.from(root.querySelectorAll(visibleSel)))
+    return wrap(safeQueryAll(root, selector))
   }
 
   return wrap([])

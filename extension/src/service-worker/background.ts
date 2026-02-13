@@ -485,7 +485,10 @@ chrome.tabs.onUpdated.addListener((tabId, _changeInfo, tab) => {
 // Route all incoming messages through the bus
 messageBus.listen()
 
-// Handle extension install/update — inject content scripts into existing tabs
+// Handle extension install/update — log only.
+// Content scripts are injected via manifest for fresh page loads.
+// For tabs already open, the REQUEST_SCAN handler retries with
+// programmatic injection if the content script doesn't respond.
 chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'install') {
     console.log('[Sweepy] Extension installed')
@@ -494,9 +497,6 @@ chrome.runtime.onInstalled.addListener((details) => {
       `[Sweepy] Extension updated to ${chrome.runtime.getManifest().version}`,
     )
   }
-
-  // Inject content scripts into Gmail tabs that were open before install/update
-  injectContentScriptsIntoGmailTabs()
 })
 
 // ── Initialization ───────────────────────────────────────────────
