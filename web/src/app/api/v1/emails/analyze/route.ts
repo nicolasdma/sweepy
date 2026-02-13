@@ -10,7 +10,7 @@ const MinimalEmailDataSchema = z.object({
   id: z.string(),
   threadId: z.string(),
   from: z.object({
-    address: z.string().email(),
+    address: z.string(),
     name: z.string(),
     domain: z.string(),
   }),

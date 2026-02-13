@@ -243,6 +243,11 @@ async function callProviderWithRetry(
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error))
 
+      // Don't retry on permanent errors (quota exceeded, auth issues)
+      if (error instanceof OpenAI.APIError && (error.status === 401 || error.code === 'insufficient_quota')) {
+        throw lastError
+      }
+
       if (attempt < maxRetries) {
         await new Promise((r) =>
           setTimeout(r, 1000 * Math.pow(2, attempt))
