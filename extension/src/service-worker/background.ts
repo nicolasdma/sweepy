@@ -1,6 +1,7 @@
 import { MessageBus } from '@/lib/message-bus'
 import { apiClient, ApiRequestError } from '@/lib/api-client'
 import { authManager } from '@/lib/auth'
+import { CONFIG } from '@/lib/config'
 import type {
   ScanState,
   SidePanelMessage,
@@ -66,6 +67,61 @@ async function findGmailTab(): Promise<number | null> {
     return allGmailTabs[0]?.id ?? null
   }
   return tabs[0]?.id ?? null
+}
+
+// ── Open a Gmail tab if none exists ──────────────────────────────
+async function openGmailTab(): Promise<number | null> {
+  const email = authManager.getEmail()
+  // Build Gmail URL — use authuser param so Chrome opens the correct account
+  const gmailUrl = email
+    ? `https://mail.google.com/mail/u/?authuser=${encodeURIComponent(email)}`
+    : 'https://mail.google.com/mail/u/0/'
+
+  console.log(`[Sweepy:Worker] Opening Gmail tab for ${email || 'default account'}: ${gmailUrl}`)
+
+  try {
+    const tab = await chrome.tabs.create({ url: gmailUrl, active: true })
+    if (!tab.id) return null
+
+    // Wait for the tab to finish loading
+    await waitForTabLoad(tab.id, 30_000)
+
+    // Inject content scripts into the new tab
+    await injectContentScriptsIntoGmailTabs()
+
+    // Wait for Gmail to signal readiness (DOM-based health check or gmail.js)
+    const ready = await waitForGmailReady(tab.id, 20_000)
+    if (ready) {
+      console.log('[Sweepy:Worker] Gmail tab opened and ready')
+    } else {
+      console.warn('[Sweepy:Worker] Gmail tab opened but readiness not confirmed — proceeding anyway')
+    }
+
+    return tab.id
+  } catch (error) {
+    console.error('[Sweepy:Worker] Failed to open Gmail tab:', error)
+    return null
+  }
+}
+
+// ── Wait for a tab to finish loading ────────────────────────────
+function waitForTabLoad(tabId: number, timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener)
+      resolve() // Resolve even on timeout — we'll try anyway
+    }, timeoutMs)
+
+    function listener(updatedTabId: number, changeInfo: chrome.tabs.TabChangeInfo) {
+      if (updatedTabId === tabId && changeInfo.status === 'complete') {
+        clearTimeout(timer)
+        chrome.tabs.onUpdated.removeListener(listener)
+        resolve()
+      }
+    }
+
+    chrome.tabs.onUpdated.addListener(listener)
+  })
 }
 
 // ── Broadcast scan state to side panel ───────────────────────────
@@ -241,14 +297,19 @@ messageBus.on('REQUEST_SCAN', async (message, _sender) => {
     return { error: 'A scan is already in progress' }
   }
 
-  const gmailTabId = await findGmailTab()
+  let gmailTabId = await findGmailTab()
   console.log('[Sweepy:Worker] Gmail tab ID:', gmailTabId)
+
+  // No Gmail tab open — open one automatically using the user's email
   if (gmailTabId === null) {
-    await messageBus.broadcast({
-      type: 'SCAN_ERROR',
-      payload: { error: 'No Gmail tab found. Please open Gmail and try again.' },
-    })
-    return { error: 'No Gmail tab found' }
+    gmailTabId = await openGmailTab()
+    if (gmailTabId === null) {
+      await messageBus.broadcast({
+        type: 'SCAN_ERROR',
+        payload: { error: 'Could not open Gmail. Please open Gmail manually and try again.' },
+      })
+      return { error: 'Could not open Gmail' }
+    }
   }
 
   // Update state
@@ -364,12 +425,34 @@ messageBus.on('EXTRACTION_RESULT', async (message) => {
   }
 
   try {
-    const { classified, stats } = await analyzeEmails(emails)
+    const analyzeTimeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Analysis timed out after 2 minutes')), CONFIG.ANALYZE_TIMEOUT_MS)
+    )
+
+    const { classified, stats } = await Promise.race([
+      analyzeEmails(emails),
+      analyzeTimeout,
+    ])
 
     scanState.status = 'complete'
     scanState.results = classified
     await persistScanState()
     stopKeepAlive()
+
+    // Persist results to local storage (survives Chrome restart)
+    try {
+      await chrome.storage.local.set({
+        [CONFIG.STORAGE_KEYS.LAST_SCAN_RESULTS]: {
+          results: classified,
+          stats,
+          scanId: scanState.scanId,
+          completedAt: Date.now(),
+        },
+      })
+      console.log('[Sweepy:Worker] Scan results persisted to local storage')
+    } catch (persistError) {
+      console.warn('[Sweepy:Worker] Failed to persist results to local storage:', persistError)
+    }
 
     await messageBus.broadcast({
       type: 'SCAN_COMPLETE',

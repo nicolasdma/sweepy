@@ -41,6 +41,7 @@ export interface MinimalEmailData {
   snippet: string // max 100 chars
   date: string
   isRead: boolean
+  labels: string[] // Gmail label IDs (IMPORTANT, STARRED, CATEGORY_PERSONAL, etc.)
   headers: EmailHeaders
   bodyLength: number
   linkCount: number

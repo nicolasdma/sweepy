@@ -74,6 +74,7 @@ export function extractEmailData(
       snippet,
       date,
       isRead: true, // gmail.js doesn't expose read status directly; set by caller
+      labels: [], // gmail.js doesn't expose label IDs; populated by Gmail API path
       headers,
       bodyLength: bodyAnalysis.bodyLength,
       linkCount: bodyAnalysis.linkCount,

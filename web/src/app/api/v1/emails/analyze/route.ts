@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { withAuth } from '@/lib/api-auth'
 import { categorizeEmails } from '@/lib/ai'
 import { createServiceRoleClient } from '@/lib/supabase/server'
+import { hasActiveSubscription } from '@/lib/stripe/subscription'
 
 const MAX_EMAILS_PER_REQUEST = 50
 
@@ -18,6 +19,7 @@ const MinimalEmailDataSchema = z.object({
   snippet: z.string().max(100),
   date: z.string(),
   isRead: z.boolean(),
+  labels: z.array(z.string()).default([]),
   headers: z.object({
     listUnsubscribe: z.string().nullable(),
     listUnsubscribePost: z.string().nullable(),
@@ -43,6 +45,15 @@ export async function POST(request: NextRequest) {
   // Auth + rate limit
   const auth = await withAuth('analyze')
   if (auth instanceof NextResponse) return auth
+
+  // Subscription check
+  const hasSubscription = await hasActiveSubscription(auth.userId)
+  if (!hasSubscription) {
+    return NextResponse.json(
+      { error: 'Active subscription required', code: 'SUBSCRIPTION_REQUIRED' },
+      { status: 403 }
+    )
+  }
 
   // Parse and validate body
   let body: unknown
@@ -154,7 +165,11 @@ export async function POST(request: NextRequest) {
     })
 
     if (actions.length > 0) {
-      await supabase.from('suggested_actions').insert(actions)
+      try {
+        await supabase.from('suggested_actions').insert(actions)
+      } catch (actionsError) {
+        console.error('[Sweepy:Analyze] Failed to insert suggested actions (non-fatal):', actionsError)
+      }
     }
 
     // Update usage tracking

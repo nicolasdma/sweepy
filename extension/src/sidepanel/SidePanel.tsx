@@ -9,7 +9,7 @@ import type {
 } from '@shared/types/messages'
 import { isExtensionMessage } from '@shared/types/messages'
 import type { ClassifiedEmail, EmailCategory, CategorizationSource } from '@shared/types/categories'
-import { CATEGORY_CONFIG as SHARED_CATEGORY_CONFIG, CATEGORY_ORDER, CLEANUP_CATEGORIES, CATEGORY_EXT_COLORS, PROTECTED_CATEGORIES } from '@shared/config/categories'
+import { CATEGORY_CONFIG as SHARED_CATEGORY_CONFIG, CATEGORY_ORDER, CLEANUP_CATEGORIES, CATEGORY_EXT_COLORS, PROTECTED_CATEGORIES, CATEGORY_GROUPS } from '@shared/config/categories'
 
 // ---------- Category config ----------
 
@@ -55,6 +55,14 @@ function getCleanupCount(emails: ClassifiedEmail[]) {
   return emails.filter((e) => CLEANUP_CATEGORIES.includes(e.category)).length
 }
 
+function groupBySuperGroup(emails: ClassifiedEmail[]) {
+  return CATEGORY_GROUPS.map((group) => {
+    const catSet = new Set(group.categories as string[])
+    const groupEmails = emails.filter((e) => catSet.has(e.category))
+    return { ...group, emails: groupEmails }
+  }).filter((g) => g.emails.length > 0)
+}
+
 // ---------- Sub-components ----------
 
 function SummaryStats({ emails, stats }: { emails: ClassifiedEmail[]; stats: ScanStats | null }) {
@@ -74,11 +82,10 @@ function SummaryStats({ emails, stats }: { emails: ClassifiedEmail[]; stats: Sca
           {emails.length} emails scanned
         </p>
         <div className="mt-1 flex gap-3 text-xs text-blue-600">
-          {resolution.resolvedByHeuristic > 0 && (
-            <span>Heuristic: {resolution.resolvedByHeuristic}</span>
+          {(resolution.resolvedByHeuristic + resolution.resolvedByCache) > 0 && (
+            <span>Instant: {resolution.resolvedByHeuristic + resolution.resolvedByCache}</span>
           )}
-          {resolution.resolvedByCache > 0 && <span>Cache: {resolution.resolvedByCache}</span>}
-          {resolution.resolvedByLlm > 0 && <span>AI: {resolution.resolvedByLlm}</span>}
+          {resolution.resolvedByLlm > 0 && <span>AI-analyzed: {resolution.resolvedByLlm}</span>}
         </div>
       </div>
 
@@ -164,6 +171,97 @@ function CategorySection({
             </li>
           ))}
         </ul>
+      )}
+    </div>
+  )
+}
+
+function GroupSection({
+  group,
+  grouped,
+}: {
+  group: { key: string; label: string; emoji: string; description: string; categories: readonly string[]; emails: ClassifiedEmail[] }
+  grouped: Partial<Record<EmailCategory, ClassifiedEmail[]>>
+}) {
+  const [expanded, setExpanded] = useState(false)
+
+  // Group colors
+  const colorMap: Record<string, string> = {
+    cleanup: 'text-red-700 bg-red-50 border-red-200',
+    review: 'text-amber-700 bg-amber-50 border-amber-200',
+    safe: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+  }
+  const badgeMap: Record<string, string> = {
+    cleanup: 'bg-red-100 text-red-700',
+    review: 'bg-amber-100 text-amber-700',
+    safe: 'bg-emerald-100 text-emerald-700',
+  }
+
+  return (
+    <div className={`mb-2 rounded-lg border ${colorMap[group.key] ?? 'text-gray-700 bg-gray-50 border-gray-200'}`}>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
+        className="flex w-full items-center justify-between px-3 py-2.5 text-left"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-base">{group.emoji}</span>
+          <div>
+            <span className="text-sm font-semibold">{group.label}</span>
+            <span className={`ml-2 rounded-full px-1.5 py-0.5 text-xs font-medium ${badgeMap[group.key] ?? 'bg-gray-100 text-gray-700'}`}>
+              {group.emails.length}
+            </span>
+          </div>
+        </div>
+        <svg
+          className={`h-4 w-4 transition-transform ${expanded ? 'rotate-180' : ''}`}
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth={2}
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-inherit">
+          {/* Sub-category breakdown */}
+          <div className="flex flex-wrap gap-1.5 px-3 py-2 bg-white/50">
+            {group.categories.filter((cat) => grouped[cat as EmailCategory]?.length).map((cat) => {
+              const cfg = CATEGORY_CONFIG[cat]
+              const count = grouped[cat as EmailCategory]?.length ?? 0
+              return (
+                <span key={cat} className="text-[10px] text-gray-500">
+                  {cfg?.emoji} {cfg?.label} {count}
+                </span>
+              )
+            })}
+          </div>
+          {/* Email list */}
+          <ul className="border-t border-inherit">
+            {group.emails.map((email) => (
+              <li
+                key={email.emailId}
+                className="border-b border-inherit px-3 py-2 last:border-b-0"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs font-medium text-gray-900">
+                      {email.sender.name || email.sender.address}
+                    </p>
+                    <p className="mt-0.5 truncate text-xs text-gray-500">
+                      {email.subject}
+                    </p>
+                  </div>
+                  <span className="shrink-0 rounded bg-white/60 px-1.5 py-0.5 text-[10px] font-medium text-gray-500">
+                    {Math.round(email.confidence * 100)}%
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </div>
   )
@@ -470,7 +568,7 @@ export function SidePanel() {
             onClick={handleScan}
             className="w-full rounded-lg bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-700"
           >
-            Scan My Inbox
+            Scan my inbox
           </button>
           <p className="mt-2 text-xs text-gray-400">
             Last 30 days, up to 1,000 emails
@@ -483,7 +581,7 @@ export function SidePanel() {
         <div className="py-8">
           <div className="mb-2 flex items-center justify-between text-sm">
             <span className="text-gray-600">
-              {phase === 'extracting' ? 'Extracting emails...' : 'Analyzing with AI...'}
+              {phase === 'extracting' ? 'Fetching emails from Gmail...' : 'Classifying with AI...'}
             </span>
             <span className="text-gray-500">
               {progress.total > 0
@@ -552,17 +650,15 @@ export function SidePanel() {
               {/* Summary stats */}
               <SummaryStats emails={results} stats={stats} />
 
-              {/* Category groups */}
+              {/* Super-groups (Clean up / Review / Safe) */}
               <div>
-                {CATEGORY_ORDER.filter((cat) => grouped[cat]?.length).map(
-                  (cat) => (
-                    <CategorySection
-                      key={cat}
-                      category={cat}
-                      emails={grouped[cat]!}
-                    />
-                  ),
-                )}
+                {groupBySuperGroup(results).map((group) => (
+                  <GroupSection
+                    key={group.key}
+                    group={group}
+                    grouped={grouped}
+                  />
+                ))}
               </div>
             </>
           )}

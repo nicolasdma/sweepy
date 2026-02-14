@@ -25,7 +25,6 @@ import {
   extractFromThread,
   type RawGmailEmail,
   type RawGmailThread,
-  type RawMimeHeaders,
 } from '@/lib/email-extractor'
 import type { MinimalEmailData, ScanOptions } from '@shared/types/email'
 
@@ -94,7 +93,11 @@ window.addEventListener('message', (event: MessageEvent) => {
 // Gmail.js initialization
 // ---------------------------------------------------------------------------
 
-/** Try to read user email from gmail.js. If successful, mark as ready. */
+/**
+ * Try to confirm Gmail is loaded. Prefer gmail.js user_email(), but if that
+ * fails we still mark as ready when we can detect the Gmail DOM — the scan
+ * strategies (DOM, tracker, etc.) don't actually need the user email.
+ */
 function performHealthCheck(): void {
   try {
     const userEmail: string = gmail.get.user_email()
@@ -102,16 +105,52 @@ function performHealthCheck(): void {
       isReady = true
       sendToIsolated('GMAIL_READY', { userEmail })
       console.log(`[Sweepy:Main] Gmail.js ready for ${userEmail}`)
-    } else {
-      sendToIsolated('GMAIL_HEALTH_CHECK_FAILED', {
-        reason: 'Could not read user email -- gmail.js loaded but no user data',
-      })
+      return
     }
-  } catch (error) {
-    sendToIsolated('GMAIL_HEALTH_CHECK_FAILED', {
-      reason: error instanceof Error ? error.message : 'Unknown health check error',
-    })
+  } catch {
+    // gmail.js user_email() threw — continue with fallback
   }
+
+  // Fallback: gmail.js missed the initial XHR data load (late injection).
+  // Check if the Gmail DOM is present — if so, DOM-based scan strategies
+  // will still work even without gmail.js internal data.
+  const isGmailDom =
+    document.querySelector('[role="main"]') !== null ||
+    document.querySelector('[data-legacy-thread-id]') !== null ||
+    document.querySelector('[data-thread-id]') !== null ||
+    document.querySelector('tr.zA') !== null
+
+  if (isGmailDom) {
+    isReady = true
+    const fallbackEmail = tryExtractEmailFromDom()
+    sendToIsolated('GMAIL_READY', { userEmail: fallbackEmail || 'unknown' })
+    console.log(`[Sweepy:Main] Gmail DOM detected, marking ready (email: ${fallbackEmail || 'unknown'})`)
+    return
+  }
+
+  sendToIsolated('GMAIL_HEALTH_CHECK_FAILED', {
+    reason: 'Could not read user email and Gmail DOM not detected yet',
+  })
+}
+
+/** Best-effort: try to extract user email from page DOM or URL. */
+function tryExtractEmailFromDom(): string | null {
+  try {
+    // Gmail shows the user's email in the account switcher / profile area
+    const emailEl = document.querySelector('[data-email]')
+    if (emailEl) return emailEl.getAttribute('data-email')
+
+    // aria-label on the account button often contains the email
+    const accountBtn = document.querySelector('a[aria-label*="@"]')
+    if (accountBtn) {
+      const label = accountBtn.getAttribute('aria-label') || ''
+      const match = label.match(/[\w.-]+@[\w.-]+/)
+      if (match) return match[0]
+    }
+  } catch {
+    // DOM query failed — not critical
+  }
+  return null
 }
 
 function initGmailJs(): void {
@@ -129,13 +168,16 @@ function initGmailJs(): void {
     // Fallback: if the script is injected AFTER Gmail has already loaded
     // (e.g., programmatic injection on extension install/update),
     // observe.on('load') won't fire because the XHR events already happened.
-    // Try a direct health check after a delay.
-    setTimeout(() => {
-      if (!isReady) {
-        console.log('[Sweepy:Main] Load event did not fire, trying direct health check...')
-        performHealthCheck()
-      }
-    }, 3000)
+    // Try escalating health checks: 2s → 5s → 10s (gives Gmail DOM time to render)
+    const retryDelays = [2000, 5000, 10000]
+    for (const delay of retryDelays) {
+      setTimeout(() => {
+        if (!isReady) {
+          console.log(`[Sweepy:Main] Health check retry at ${delay}ms...`)
+          performHealthCheck()
+        }
+      }, delay)
+    }
   } catch (error) {
     sendToIsolated('GMAIL_HEALTH_CHECK_FAILED', {
       reason: error instanceof Error ? error.message : 'Failed to initialize gmail.js',
@@ -267,9 +309,29 @@ const BATCH_SIZE = 50
 
 async function handleStartScan(options: ScanOptions): Promise<void> {
   console.log('[Sweepy:Main] handleStartScan called, isReady:', isReady, 'gmail:', !!gmail)
-  if (!isReady || !gmail) {
-    sendToIsolated('EXTRACTION_ERROR', { error: 'Gmail.js not ready' })
+
+  if (!gmail) {
+    sendToIsolated('EXTRACTION_ERROR', { error: 'Gmail.js not initialized' })
     return
+  }
+
+  // If not yet marked ready, try one more health check — the DOM may have
+  // loaded since the initial check failed (late injection scenario).
+  if (!isReady) {
+    console.log('[Sweepy:Main] Not ready yet, running on-demand health check...')
+    performHealthCheck()
+    if (!isReady) {
+      // Still not ready — give Gmail DOM a moment to settle and try once more
+      await sleep(2000)
+      performHealthCheck()
+    }
+    if (!isReady) {
+      sendToIsolated('EXTRACTION_ERROR', {
+        error: 'Gmail not ready. Please reload the Gmail tab and try again.',
+      })
+      return
+    }
+    console.log('[Sweepy:Main] On-demand health check succeeded, proceeding with scan')
   }
 
   // Abort any running scan
@@ -425,75 +487,6 @@ function extractSingleEmail(
   }
 
   return null
-}
-
-/**
- * Fetch MIME headers for an email asynchronously.
- * Returns parsed headers or undefined if fetch fails/times out.
- */
-export async function fetchMimeHeaders(
-  emailId: string
-): Promise<RawMimeHeaders | undefined> {
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => resolve(undefined), 5000)
-
-    try {
-      gmail.get.email_source_async(
-        emailId,
-        (source: string) => {
-          clearTimeout(timeout)
-          if (!source) {
-            resolve(undefined)
-            return
-          }
-          // Parse only the headers (before the first empty line)
-          const headerEnd = source.indexOf('\r\n\r\n')
-          const headerSection =
-            headerEnd > 0 ? source.substring(0, headerEnd) : source.substring(0, 4096)
-          resolve(parseMimeHeadersRaw(headerSection))
-        },
-        () => {
-          clearTimeout(timeout)
-          resolve(undefined)
-        }
-      )
-    } catch {
-      clearTimeout(timeout)
-      resolve(undefined)
-    }
-  })
-}
-
-/**
- * Parse raw MIME header text into a key-value map.
- */
-function parseMimeHeadersRaw(headerText: string): RawMimeHeaders {
-  const headers: RawMimeHeaders = {}
-  // Unfold continuation lines (RFC 2822)
-  const unfolded = headerText.replace(/\r?\n[ \t]+/g, ' ')
-  const lines = unfolded.split(/\r?\n/)
-
-  for (const line of lines) {
-    const colonIdx = line.indexOf(':')
-    if (colonIdx <= 0) continue
-    const key = line.substring(0, colonIdx).trim().toLowerCase()
-    const value = line.substring(colonIdx + 1).trim()
-
-    // Only keep headers we care about
-    if (
-      key === 'list-unsubscribe' ||
-      key === 'list-unsubscribe-post' ||
-      key === 'precedence' ||
-      key === 'x-campaign' ||
-      key === 'x-campaignid' ||
-      key === 'x-mailer' ||
-      key === 'return-path'
-    ) {
-      headers[key] = value
-    }
-  }
-
-  return headers
 }
 
 // ---------------------------------------------------------------------------

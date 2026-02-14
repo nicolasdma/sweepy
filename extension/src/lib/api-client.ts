@@ -8,8 +8,7 @@ import type {
   ApiError,
 } from '@shared/types/api'
 import { authManager } from './auth'
-
-const DEFAULT_API_BASE = 'http://localhost:3000/api/v1'
+import { CONFIG } from './config'
 
 export class ApiRequestError extends Error {
   constructor(
@@ -24,13 +23,14 @@ export class ApiRequestError extends Error {
 class ApiClient {
   private baseUrl: string
 
-  constructor(baseUrl: string = DEFAULT_API_BASE) {
+  constructor(baseUrl: string = CONFIG.API_BASE) {
     this.baseUrl = baseUrl
   }
 
   private async request<T>(
     path: string,
-    options: RequestInit = {}
+    options: RequestInit = {},
+    timeoutMs: number = CONFIG.API_TIMEOUT_MS
   ): Promise<T> {
     const token = await authManager.getToken()
     if (!token) {
@@ -41,6 +41,9 @@ class ApiClient {
     const url = `${this.baseUrl}${path}`
     console.log(`[Sweepy:API] ${options.method ?? 'GET'} ${url}`)
 
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
@@ -50,32 +53,37 @@ class ApiClient {
           : '0.0.0',
     }
 
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        ...headers,
-        ...(options.headers as Record<string, string>),
-      },
-    })
+    try {
+      const response = await fetch(url, {
+        ...options,
+        headers: {
+          ...headers,
+          ...(options.headers as Record<string, string>),
+        },
+        signal: controller.signal,
+      })
 
-    if (!response.ok) {
-      const error: ApiError = await response.json().catch(() => ({
-        error: 'Unknown error',
-        code: 'UNKNOWN',
-      }))
-      console.error(`[Sweepy:API] ${url} responded ${response.status}:`, error)
-      throw new ApiRequestError(response.status, error)
+      if (!response.ok) {
+        const error: ApiError = await response.json().catch(() => ({
+          error: 'Unknown error',
+          code: 'UNKNOWN',
+        }))
+        console.error(`[Sweepy:API] ${url} responded ${response.status}:`, error)
+        throw new ApiRequestError(response.status, error)
+      }
+
+      console.log(`[Sweepy:API] ${url} responded ${response.status} OK`)
+      return response.json()
+    } finally {
+      clearTimeout(timeoutId)
     }
-
-    console.log(`[Sweepy:API] ${url} responded ${response.status} OK`)
-    return response.json()
   }
 
   async analyzeEmails(data: AnalyzeRequest): Promise<AnalyzeResponse> {
     return this.request<AnalyzeResponse>('/emails/analyze', {
       method: 'POST',
       body: JSON.stringify(data),
-    })
+    }, CONFIG.ANALYZE_TIMEOUT_MS)
   }
 
   async rejectAction(

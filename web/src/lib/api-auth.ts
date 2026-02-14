@@ -6,6 +6,8 @@ import { rateLimiters } from '@/lib/redis'
 
 type RateLimitKey = 'auth' | 'analyze' | 'actions'
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+$/
+
 export interface AuthenticatedRequest {
   userId: string
   email: string
@@ -55,6 +57,11 @@ function verifyExtensionToken(token: string): { userId: string; email: string } 
       return null
     }
 
+    if (!EMAIL_REGEX.test(decoded.email)) {
+      console.warn('[Sweepy:Auth] Extension token has invalid email format')
+      return null
+    }
+
     return { userId: decoded.userId, email: decoded.email }
   } catch (err) {
     console.error('[Sweepy:Auth] Failed to decode extension token payload:', err)
@@ -81,11 +88,15 @@ export async function withAuth(
       userId = result.userId
       email = result.email
     } else {
-      console.warn('[Sweepy:Auth] Extension JWT verification failed, falling back to cookie auth')
+      // Bearer token present but invalid → return 401 immediately, do NOT fall back
+      return NextResponse.json(
+        { error: 'Invalid extension token', code: 'INVALID_TOKEN' },
+        { status: 401 }
+      )
     }
   }
 
-  // Fall back to cookie-based Supabase auth (web dashboard)
+  // Fall back to cookie-based Supabase auth (web dashboard) — only if no Bearer header was sent
   if (!userId) {
     const supabase = await createServerSupabaseClient()
     const {
@@ -101,9 +112,17 @@ export async function withAuth(
       )
     }
 
+    if (!user.email || !EMAIL_REGEX.test(user.email)) {
+      console.warn(`[Sweepy:Auth] Supabase user ${user.id} has no valid email`)
+      return NextResponse.json(
+        { error: 'Invalid account email', code: 'INVALID_EMAIL' },
+        { status: 401 }
+      )
+    }
+
     console.log(`[Sweepy:Auth] Cookie auth verified for user ${user.id}`)
     userId = user.id
-    email = user.email!
+    email = user.email
   }
 
   if (rateLimitKey && rateLimiters) {
@@ -121,5 +140,6 @@ export async function withAuth(
     }
   }
 
-  return { userId, email: email! }
+  // At this point both userId and email are guaranteed to be defined and validated
+  return { userId, email: email as string }
 }

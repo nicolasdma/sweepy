@@ -1,22 +1,7 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import Link from 'next/link'
 import { ScanButton } from './scan-button'
-import { SettingsPanel } from './settings-panel'
-import { CATEGORY_CONFIG as SHARED_CONFIG, CATEGORY_COLORS, PROTECTED_CATEGORIES } from '@shared/config/categories'
-
-const CATEGORY_CONFIG: Record<string, { label: string; emoji: string; gradient: string; accent: string }> = Object.fromEntries(
-  Object.entries(SHARED_CONFIG).map(([key, cfg]) => [
-    key,
-    {
-      label: cfg.label,
-      emoji: cfg.emoji,
-      gradient: CATEGORY_COLORS[key]?.gradient ?? 'from-gray-500/8 to-gray-500/3',
-      accent: CATEGORY_COLORS[key]?.text ?? 'text-gray-600',
-    },
-  ])
-)
-
-const PROTECTED = PROTECTED_CATEGORIES as Set<string>
+import { CATEGORY_GROUPS } from '@shared/config/categories'
 
 function formatDate(dateStr: string): string {
   const date = new Date(dateStr)
@@ -69,24 +54,26 @@ export default async function DashboardPage({
   const latestCompleted = scans.find((s) => s.status === 'completed')
   const scanCategoryCounts: Record<string, number> = latestCompleted?.category_counts ?? {}
 
-  // Fetch LIVE pending counts per category (not the stale scan snapshot)
+  // Compute scan age and expiration
+  const EXPIRY_DAYS = 7
+  const scanAgeDays = latestCompleted
+    ? Math.floor((Date.now() - new Date(latestCompleted.created_at).getTime()) / (1000 * 60 * 60 * 24))
+    : 0
+  const daysRemaining = Math.max(0, EXPIRY_DAYS - scanAgeDays)
+  const showExpiry = latestCompleted && scanAgeDays >= 3
+
+  // Fetch LIVE pending counts per category — single query, aggregate in memory
   const pendingByCategory: Record<string, number> = {}
   if (latestCompleted) {
-    const PAGE = 1000
-    let offset = 0
-    while (true) {
-      const { data } = await supabase
-        .from('suggested_actions')
-        .select('category')
-        .eq('scan_id', latestCompleted.id)
-        .eq('status', 'pending')
-        .range(offset, offset + PAGE - 1)
-      if (!data || data.length === 0) break
+    const { data } = await supabase
+      .from('suggested_actions')
+      .select('category')
+      .eq('scan_id', latestCompleted.id)
+      .eq('status', 'pending')
+    if (data) {
       for (const row of data) {
         pendingByCategory[row.category] = (pendingByCategory[row.category] || 0) + 1
       }
-      if (data.length < PAGE) break
-      offset += PAGE
     }
   }
 
@@ -188,52 +175,83 @@ export default async function DashboardPage({
             </div>
           </div>
 
-          {/* Scan controls */}
-          <div className="mt-8 animate-fade-in-up-d2">
-            <ScanButton />
-          </div>
-
           {/* Category distribution */}
           {hasCategories && (
-            <div className="mt-10 animate-fade-in-up-d2">
-              <div className="flex items-center justify-between">
+            <div className="mt-8 animate-fade-in-up-d2">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
                 <div>
-                  <h2 className="text-lg font-semibold text-[#0f0f23]">Latest Scan</h2>
-                  <p className="mt-0.5 text-sm text-[#9898b0]">
-                    {latestCompleted?.total_emails_scanned} emails scanned · {totalPendingInScan > 0 ? `${formatNumber(totalPendingInScan)} pending` : 'all processed'} · {formatDate(latestCompleted!.created_at)}
-                  </p>
+                  <h2 className="text-xl font-bold text-[#0f0f23]">Latest Scan</h2>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-[#9898b0]">
+                    <span>{formatNumber(latestCompleted?.total_emails_scanned ?? 0)} emails scanned</span>
+                    <span className="text-[#d0d0d8]">·</span>
+                    <span>{totalPendingInScan > 0 ? <span className="font-medium text-[#64648a]">{formatNumber(totalPendingInScan)} pending</span> : 'all processed'}</span>
+                    <span className="text-[#d0d0d8]">·</span>
+                    <span>{formatDate(latestCompleted!.created_at)}</span>
+                    {showExpiry && totalPendingInScan > 0 && (
+                      <>
+                        <span className="text-[#d0d0d8]">·</span>
+                        <span className={daysRemaining <= 2 ? 'text-amber-600 font-medium' : ''}>
+                          {daysRemaining === 0 ? 'expires today' : `expires in ${daysRemaining}d`}
+                        </span>
+                      </>
+                    )}
+                  </div>
                 </div>
-                {totalPendingInScan > 0 && (
-                  <Link
-                    href={`/scan/${latestCompleted!.id}`}
-                    className="glow-button inline-flex items-center gap-2 rounded-xl px-6 py-2.5 text-sm font-semibold text-white"
-                  >
-                    Review {formatNumber(totalPendingInScan)} emails
-                  </Link>
-                )}
+                <ScanButton compact />
               </div>
 
-              {/* Category bar visualization */}
-              <div className="mt-5 glass-card rounded-xl p-5">
-                {/* Horizontal bar — shows scanned distribution with pending overlay */}
-                <div className="flex h-3 w-full overflow-hidden rounded-full bg-black/[0.03]">
-                  {allCategories
-                    .filter((cat) => (pendingByCategory[cat] ?? 0) > 0)
-                    .sort((a, b) => (pendingByCategory[b] ?? 0) - (pendingByCategory[a] ?? 0))
-                    .map((category) => {
-                      const count = pendingByCategory[category] ?? 0
-                      const pct = totalPendingInScan > 0 ? (count / totalPendingInScan) * 100 : 0
-                      const barColor = CATEGORY_COLORS[category]?.bar ?? 'bg-gray-400'
+              {/* Super-group bar visualization */}
+              <div className="mt-5 glass-card rounded-xl p-6">
+                {/* Bar labels */}
+                {totalPendingInScan > 0 && (
+                  <div className="mb-2 flex">
+                    {CATEGORY_GROUPS.map((group) => {
+                      const groupPending = group.categories.reduce((sum, cat) => sum + (pendingByCategory[cat] ?? 0), 0)
+                      const pct = totalPendingInScan > 0 ? (groupPending / totalPendingInScan) * 100 : 0
+                      if (groupPending === 0) return null
                       return (
-                        <div
-                          key={category}
-                          className={`${barColor} transition-all duration-700 first:rounded-l-full last:rounded-r-full`}
-                          style={{ width: `${pct}%` }}
-                          title={`${CATEGORY_CONFIG[category]?.label}: ${count} pending`}
-                        />
+                        <div key={group.key} className="flex items-center justify-center gap-1" style={{ width: `${pct}%` }}>
+                          <span className="text-xs">{group.emoji}</span>
+                          <span className={`text-xs font-medium ${group.text}`}>{formatNumber(groupPending)}</span>
+                        </div>
                       )
                     })}
+                  </div>
+                )}
+
+                {/* Horizontal bar — 3 super-groups */}
+                <div className="flex h-4 w-full overflow-hidden rounded-full bg-black/[0.03]">
+                  {CATEGORY_GROUPS.map((group) => {
+                    const groupPending = group.categories.reduce((sum, cat) => sum + (pendingByCategory[cat] ?? 0), 0)
+                    const pct = totalPendingInScan > 0 ? (groupPending / totalPendingInScan) * 100 : 0
+                    if (groupPending === 0) return null
+                    return (
+                      <div
+                        key={group.key}
+                        className={`${group.bar} transition-all duration-700 first:rounded-l-full last:rounded-r-full`}
+                        style={{ width: `${pct}%` }}
+                        title={`${group.label}: ${groupPending} pending`}
+                      />
+                    )
+                  })}
                 </div>
+
+                {/* Legend */}
+                {totalPendingInScan > 0 && (
+                  <div className="mt-2.5 flex items-center justify-center gap-4">
+                    {CATEGORY_GROUPS.map((group) => {
+                      const groupPending = group.categories.reduce((sum, cat) => sum + (pendingByCategory[cat] ?? 0), 0)
+                      if (groupPending === 0) return null
+                      return (
+                        <div key={group.key} className="flex items-center gap-1.5">
+                          <div className={`h-2.5 w-2.5 rounded-full ${group.bar}`} />
+                          <span className="text-[11px] text-[#9898b0]">{group.label}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
                 {totalPendingInScan === 0 && (
                   <div className="mt-3 flex items-center justify-center gap-2 text-sm text-emerald-600">
                     <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -243,61 +261,76 @@ export default async function DashboardPage({
                   </div>
                 )}
 
-                {/* Category grid */}
-                <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {allCategories
-                    .sort((a, b) => (scanCategoryCounts[b] ?? 0) - (scanCategoryCounts[a] ?? 0))
-                    .map((category) => {
-                      const config = CATEGORY_CONFIG[category] ?? CATEGORY_CONFIG.unknown
-                      const isProtected = PROTECTED.has(category)
-                      const scannedCount = scanCategoryCounts[category] ?? 0
-                      const pendingInCat = pendingByCategory[category] ?? 0
-                      const isDone = pendingInCat === 0
-                      return (
-                        <Link
-                          key={category}
-                          href={`/scan/${latestCompleted!.id}?category=${category}`}
-                          className={`group relative flex items-center justify-between rounded-lg bg-gradient-to-r ${config.gradient} p-3.5 transition-all hover:scale-[1.02] hover:shadow-md ${isDone ? 'opacity-50' : ''}`}
-                        >
-                          <div className="flex items-center gap-3">
-                            <span className="text-xl">{config.emoji}</span>
-                            <div>
-                              <p className="text-sm font-medium text-[#0f0f23]">{config.label}</p>
-                              <p className="text-xs text-[#9898b0]">
-                                {isDone
-                                  ? `${scannedCount} processed`
-                                  : `${pendingInCat} of ${scannedCount} pending`}
-                              </p>
+                {/* 3 super-group cards */}
+                <div className="mt-6 grid gap-4 sm:grid-cols-3">
+                  {CATEGORY_GROUPS.map((group) => {
+                    const groupScanned = group.categories.reduce((sum, cat) => sum + (scanCategoryCounts[cat] ?? 0), 0)
+                    const groupPending = group.categories.reduce((sum, cat) => sum + (pendingByCategory[cat] ?? 0), 0)
+                    if (groupScanned === 0) return null
+                    const isDone = groupPending === 0
+                    const progressPct = groupScanned > 0 ? ((groupScanned - groupPending) / groupScanned) * 100 : 0
+                    return (
+                      <Link
+                        key={group.key}
+                        href={`/scan/${latestCompleted!.id}?group=${group.key}`}
+                        className={`group relative flex flex-col rounded-xl bg-gradient-to-br ${group.gradient} p-5 transition-all duration-200 hover:scale-[1.02] hover:shadow-lg`}
+                      >
+                        {/* Header: emoji + label */}
+                        <div className="flex items-center gap-2">
+                          <span className="text-lg">{group.emoji}</span>
+                          <p className={`text-sm font-semibold ${group.text}`}>{group.label}</p>
+                        </div>
+                        <p className="mt-0.5 text-[11px] text-[#9898b0]">{group.description}</p>
+
+                        {/* Hero number or done state */}
+                        <div className="mt-3">
+                          {isDone ? (
+                            <div className="flex items-center gap-2">
+                              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500/10">
+                                <svg className="h-4 w-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                                </svg>
+                              </div>
+                              <span className="text-sm font-medium text-emerald-600">All done</span>
                             </div>
+                          ) : (
+                            <div>
+                              <span className={`text-3xl font-bold ${group.text} tracking-tight`}>
+                                {formatNumber(groupPending)}
+                              </span>
+                              <span className="ml-1.5 text-xs text-[#9898b0]">pending</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Mini progress bar */}
+                        <div className="mt-3">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-[10px] text-[#9898b0]">{groupScanned - groupPending} of {groupScanned} processed</span>
+                            <span className="text-[10px] font-medium text-[#9898b0]">{Math.round(progressPct)}%</span>
                           </div>
-                          <div className="text-right">
-                            {isDone ? (
-                              <svg className="h-5 w-5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
-                              </svg>
-                            ) : (
-                              <span className={`text-lg font-bold ${config.accent}`}>{pendingInCat}</span>
-                            )}
-                            {isProtected && (
-                              <p className="text-[10px] text-[#9898b0]">Protected</p>
-                            )}
+                          <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/[0.04]">
+                            <div
+                              className={`h-full rounded-full ${isDone ? 'bg-emerald-400' : group.bar} transition-all duration-700`}
+                              style={{ width: `${progressPct}%` }}
+                            />
                           </div>
-                        </Link>
-                      )
-                    })}
+                        </div>
+
+                      </Link>
+                    )
+                  })}
                 </div>
               </div>
             </div>
           )}
 
-          {/* Settings */}
-          <div className="mt-10 animate-fade-in-up-d2">
-            <SettingsPanel
-              autoScanEnabled={false}
-              autoScanFrequency={'weekly'}
-              digestEmailEnabled={true}
-            />
-          </div>
+          {/* Scan controls fallback — when no scan results yet */}
+          {!hasCategories && (
+            <div className="mt-8 animate-fade-in-up-d2">
+              <ScanButton />
+            </div>
+          )}
         </>
       )}
     </div>

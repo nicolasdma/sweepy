@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 
 interface ActionBreakdown {
   label: string
@@ -57,8 +58,12 @@ export function ConfirmationModal({
   useEffect(() => {
     if (!isOpen) return
     document.addEventListener('keydown', handleKeyDown)
+    document.body.style.overflow = 'hidden'
     confirmRef.current?.focus()
-    return () => document.removeEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      document.body.style.overflow = ''
+    }
   }, [isOpen, handleKeyDown])
 
   if (!isOpen) return null
@@ -67,11 +72,11 @@ export function ConfirmationModal({
   const hasDestructive = actions.some((a) => a.variant === 'destructive')
   const isDestructive = variant === 'destructive' || hasDestructive
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
       {/* Backdrop */}
       <div
-        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+        className="absolute inset-0 bg-black/40 backdrop-blur-sm cursor-pointer"
         onClick={onClose}
       />
 
@@ -109,55 +114,57 @@ export function ConfirmationModal({
         )}
 
         {/* Action breakdown */}
-        <div className="mt-5 space-y-2">
-          {actions.map((action) => (
-            <div
-              key={action.label}
-              className={`flex items-center justify-between rounded-lg px-4 py-2.5 ${
-                action.variant === 'destructive'
-                  ? 'bg-red-500/10 border border-red-500/20'
-                  : 'bg-black/[0.03] border border-black/[0.04]'
-              }`}
-            >
-              <span
-                className={`text-sm font-medium ${
-                  action.variant === 'destructive' ? 'text-red-700' : 'text-[#0f0f23]'
+        {actions.length > 0 && (
+          <div className="mt-5 space-y-2">
+            {actions.map((action) => (
+              <div
+                key={action.label}
+                className={`flex items-center justify-between rounded-lg px-4 py-2.5 ${
+                  action.variant === 'destructive'
+                    ? 'bg-red-500/10 border border-red-500/20'
+                    : 'bg-black/[0.03] border border-black/[0.04]'
                 }`}
               >
-                {action.label}
-              </span>
-              <span
-                className={`font-mono text-sm font-semibold ${
-                  action.variant === 'destructive' ? 'text-red-600' : 'text-[#64648a]'
-                }`}
-              >
-                {action.count.toLocaleString()} email{action.count !== 1 ? 's' : ''}
-              </span>
-            </div>
-          ))}
+                <span
+                  className={`text-sm font-medium ${
+                    action.variant === 'destructive' ? 'text-red-700' : 'text-[#0f0f23]'
+                  }`}
+                >
+                  {action.label}
+                </span>
+                <span
+                  className={`font-mono text-sm font-semibold ${
+                    action.variant === 'destructive' ? 'text-red-600' : 'text-[#64648a]'
+                  }`}
+                >
+                  {action.count.toLocaleString()} email{action.count !== 1 ? 's' : ''}
+                </span>
+              </div>
+            ))}
 
-          {actions.length > 1 && (
-            <div className="flex items-center justify-between px-4 py-1">
-              <span className="text-xs font-medium text-[#9898b0] uppercase tracking-wider">Total</span>
-              <span className="font-mono text-sm font-bold text-[#0f0f23]">
-                {totalCount.toLocaleString()} email{totalCount !== 1 ? 's' : ''}
-              </span>
-            </div>
-          )}
-        </div>
+            {actions.length > 1 && (
+              <div className="flex items-center justify-between px-4 py-1">
+                <span className="text-xs font-medium text-[#9898b0] uppercase tracking-wider">Total</span>
+                <span className="font-mono text-sm font-bold text-[#0f0f23]">
+                  {totalCount.toLocaleString()} email{totalCount !== 1 ? 's' : ''}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Buttons */}
         <div className="mt-6 flex gap-3">
           <button
             onClick={onClose}
-            className="flex-1 rounded-xl border border-black/[0.06] bg-white/60 px-4 py-2.5 text-sm font-medium text-[#64648a] transition-all hover:border-black/10 hover:text-[#0f0f23]"
+            className="flex-1 cursor-pointer rounded-xl border border-black/[0.06] bg-white/60 px-4 py-2.5 text-sm font-medium text-[#64648a] transition-all hover:border-black/10 hover:text-[#0f0f23]"
           >
             Cancel
           </button>
           <button
             ref={confirmRef}
             onClick={onConfirm}
-            className={`flex-1 rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition-all ${
+            className={`flex-1 cursor-pointer rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition-all ${
               isDestructive
                 ? 'bg-red-600 hover:bg-red-700'
                 : 'glow-button'
@@ -167,6 +174,7 @@ export function ConfirmationModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

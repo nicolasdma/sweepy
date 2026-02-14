@@ -9,6 +9,10 @@ html {
   scroll-behavior: smooth;
 }
 
+button, [role="button"], a {
+  cursor: pointer;
+}
+
 body {
   background: #fafaf8;
   color: #0f0f23;
@@ -72,12 +76,12 @@ body {
   position: relative;
   display: inline-block;
   background: linear-gradient(135deg, #6366f1, #7c3aed);
-  box-shadow: 0 4px 20px rgba(99, 102, 241, 0.3);
+  box-shadow: 0 2px 12px rgba(99, 102, 241, 0.15);
   transition: transform 0.25s ease, box-shadow 0.25s ease;
 }
 .glow-button:hover {
   transform: translateY(-1px);
-  box-shadow: 0 8px 32px rgba(99, 102, 241, 0.3);
+  box-shadow: 0 4px 20px rgba(99, 102, 241, 0.2);
 }
 
 /* ---- Dot grid background ---- */

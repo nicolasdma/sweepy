@@ -1,18 +1,23 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 
 type ScanPhase = 'idle' | 'starting' | 'classifying' | 'done' | 'error'
 
-export function ScanButton() {
+export function ScanButton({ compact = false }: { compact?: boolean }) {
   const [phase, setPhase] = useState<ScanPhase>('idle')
   const [error, setError] = useState<string | null>(null)
   const [scanId, setScanId] = useState<string | null>(null)
   const [progress, setProgress] = useState({ classified: 0, total: 0 })
+  const [pollWarning, setPollWarning] = useState<string | null>(null)
+  const pollCountRef = useRef(0)
+  const lastProgressRef = useRef(0)
   const router = useRouter()
 
   const pollProgress = useCallback(async (id: string) => {
+    pollCountRef.current++
+
     try {
       const res = await fetch(`/api/v1/scan/${id}/status`)
       if (!res.ok) return
@@ -21,7 +26,6 @@ export function ScanButton() {
       if (scan.status === 'completed') {
         setPhase('done')
         const total = scan.total_emails_scanned ?? 0
-        const classified = scan.resolved_by_llm ?? 0
         if (total > 0) setProgress({ classified: total, total })
         setTimeout(() => router.push(`/scan/${id}`), 1200)
         return
@@ -38,6 +42,22 @@ export function ScanButton() {
         setPhase('classifying')
         setProgress({ classified, total })
       }
+
+      // Check for stale progress
+      const currentProgress = classified + total
+      if (currentProgress !== lastProgressRef.current) {
+        lastProgressRef.current = currentProgress
+        pollCountRef.current = 0 // Reset counter on progress
+        setPollWarning(null)
+      } else if (pollCountRef.current >= 150) {
+        // 5 minutes without progress — stop
+        setPhase('error')
+        setError('Scan appears to be stuck. Please try again.')
+        return
+      } else if (pollCountRef.current >= 30) {
+        // 60 seconds without progress — warn
+        setPollWarning('Scan is taking longer than expected...')
+      }
     } catch {
       // Ignore polling errors
     }
@@ -52,9 +72,14 @@ export function ScanButton() {
   }, [phase, scanId, pollProgress])
 
   async function handleScan() {
+    if (phase !== 'idle' && phase !== 'error') return
+
     setPhase('starting')
     setError(null)
+    setPollWarning(null)
     setProgress({ classified: 0, total: 0 })
+    pollCountRef.current = 0
+    lastProgressRef.current = 0
 
     try {
       const res = await fetch('/api/v1/scan', {
@@ -80,18 +105,45 @@ export function ScanButton() {
   }
 
   const pct = progress.total > 0 ? Math.round((progress.classified / progress.total) * 100) : 0
+  const isActive = phase !== 'idle' && phase !== 'error'
 
   if (phase === 'idle' || phase === 'error') {
+    if (compact) {
+      return (
+        <div className="flex flex-col items-end gap-2">
+          <button
+            onClick={handleScan}
+            disabled={isActive}
+            className="glow-button inline-flex items-center gap-2 rounded-xl px-7 py-3 text-sm font-semibold text-white shrink-0 whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+            </svg>
+            Scan inbox
+          </button>
+          {error && (
+            <div className="flex items-center gap-1.5 rounded-lg bg-red-500/10 px-3 py-1.5">
+              <svg className="h-3.5 w-3.5 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+              </svg>
+              <p className="text-xs text-red-700">{error}</p>
+            </div>
+          )}
+        </div>
+      )
+    }
     return (
       <div className="glass-card rounded-xl p-5">
         <div className="flex items-center gap-4">
           <button
             onClick={handleScan}
-            className="glow-button rounded-xl px-8 py-3.5 text-sm font-semibold text-white"
+            disabled={isActive}
+            className="glow-button rounded-xl px-8 py-3.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
           >
-            Scan My Inbox
+            Scan my inbox
           </button>
         </div>
+        <p className="mt-2 text-xs text-[#9898b0]">Scans up to 2,000 recent emails. Only metadata is analyzed.</p>
         {error && (
           <div className="mt-4 flex items-center gap-2 rounded-lg bg-red-500/10 px-4 py-2.5">
             <svg className="h-4 w-4 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -174,6 +226,16 @@ export function ScanButton() {
           <div className="h-2 w-full overflow-hidden rounded-full bg-black/[0.04]">
             <div className="h-full w-1/3 rounded-full bg-gradient-to-r from-indigo-500/60 to-purple-500/60 animate-pulse" />
           </div>
+        </div>
+      )}
+
+      {/* Poll warning */}
+      {pollWarning && (
+        <div className="mt-3 flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-2">
+          <svg className="h-4 w-4 text-amber-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+          </svg>
+          <p className="text-xs text-amber-700">{pollWarning}</p>
         </div>
       )}
     </div>

@@ -1,21 +1,10 @@
 'use client'
 
 import { useState, useMemo, useEffect, useRef } from 'react'
-import { CATEGORY_CONFIG as SHARED_CONFIG, CATEGORY_COLORS, PROTECTED_CATEGORIES } from '@shared/config/categories'
+import { CATEGORY_CONFIG as SHARED_CONFIG, CATEGORY_COLORS, PROTECTED_CATEGORIES, CATEGORY_GROUPS } from '@shared/config/categories'
 import { ConfirmationModal } from '@/components/confirmation-modal'
+import { UndoToast } from '@/components/undo-toast'
 import { useRouter } from 'next/navigation'
-
-const CATEGORY_CONFIG: Record<string, { label: string; emoji: string; accent: string; bg: string }> = Object.fromEntries(
-  Object.entries(SHARED_CONFIG).map(([key, cfg]) => [
-    key,
-    {
-      label: cfg.label,
-      emoji: cfg.emoji,
-      accent: CATEGORY_COLORS[key]?.text ?? 'text-gray-600',
-      bg: CATEGORY_COLORS[key]?.gradient ?? 'from-gray-500/8 to-gray-500/3',
-    },
-  ])
-)
 
 const ACTION_LABELS: Record<string, { label: string; color: string }> = {
   archive: { label: 'Archive', color: 'bg-blue-500/10 text-blue-700 border border-blue-500/20' },
@@ -62,54 +51,56 @@ function formatDate(dateStr: string): string {
   })
 }
 
-export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; actions: ScanAction[]; initialCategory?: string }) {
+export function ScanResults({ scan, actions, initialCategory, initialGroup }: { scan: Scan; actions: ScanAction[]; initialCategory?: string; initialGroup?: string }) {
   const router = useRouter()
-  const [selected, setSelected] = useState<Set<string>>(() => {
-    const initial = new Set<string>()
-    for (const a of actions) {
-      if (a.status === 'pending' && !PROTECTED.has(a.category)) {
-        initial.add(a.id)
-      }
-    }
-    return initial
-  })
+  const [selected, setSelected] = useState<Set<string>>(new Set())
   const [executing, setExecuting] = useState(false)
   const [progress, setProgress] = useState<{ done: number; total: number; executed: number; failed: number } | null>(null)
   const [result, setResult] = useState<{ executed: number; failed: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [categoryFilter, setCategoryFilter] = useState<string | null>(initialCategory ?? null)
   const [showConfirmModal, setShowConfirmModal] = useState(false)
+  const [showSkipConfirmModal, setShowSkipConfirmModal] = useState(false)
+  const [undoBatchId, setUndoBatchId] = useState<string | null>(null)
+  const [undoCount, setUndoCount] = useState(0)
   const filteredCategoryRef = useRef<HTMLDivElement>(null)
 
-  // Collapse all categories except the filtered one on initial load
-  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(() => {
+  // Collapsed super-groups (by group key)
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
+    if (initialGroup) {
+      // Collapse all groups except the target group
+      return new Set(CATEGORY_GROUPS.filter((g) => g.key !== initialGroup).map((g) => g.key))
+    }
     if (!initialCategory) return new Set()
-    const allCategories = new Set(actions.filter((a) => a.status === 'pending').map((a) => a.category))
-    allCategories.delete(initialCategory)
-    return allCategories
+    // Collapse all groups except the one containing the filtered category
+    const targetGroup = CATEGORY_GROUPS.find((g) => g.categories.includes(initialCategory as any))
+    return new Set(CATEGORY_GROUPS.filter((g) => g.key !== targetGroup?.key).map((g) => g.key))
   })
 
-  // Scroll to filtered category on mount
+  // Expanded sub-categories within groups (show individual category breakdown)
+  const [expandedSubCategories, setExpandedSubCategories] = useState<Set<string>>(() => {
+    // If filtering by category, expand that group's sub-categories
+    if (initialCategory) {
+      const targetGroup = CATEGORY_GROUPS.find((g) => g.categories.includes(initialCategory as any))
+      return targetGroup ? new Set([targetGroup.key]) : new Set()
+    }
+    return new Set()
+  })
+
+  // Scroll to filtered category/group on mount
   useEffect(() => {
-    if (initialCategory && filteredCategoryRef.current) {
+    if ((initialCategory || initialGroup) && filteredCategoryRef.current) {
       filteredCategoryRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
-  }, [initialCategory])
+  }, [initialCategory, initialGroup])
 
   const pendingActions = useMemo(() => actions.filter((a) => a.status === 'pending'), [actions])
   const executedActions = useMemo(() => actions.filter((a) => a.status === 'executed'), [actions])
-  const nonPendingActions = useMemo(() => actions.filter((a) => a.status !== 'pending'), [actions])
 
   // Visible pending actions (respects category filter)
   const visiblePending = useMemo(
     () => categoryFilter ? pendingActions.filter((a) => a.category === categoryFilter) : pendingActions,
     [pendingActions, categoryFilter]
-  )
-
-  // Non-pending actions for filtered category (shown as read-only when filtering)
-  const filteredNonPending = useMemo(
-    () => categoryFilter ? nonPendingActions.filter((a) => a.category === categoryFilter) : [],
-    [nonPendingActions, categoryFilter]
   )
 
   // How many of the visible actions are selected
@@ -118,23 +109,36 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
     [visiblePending, selected]
   )
 
-  const grouped = useMemo(() => {
-    const map = new Map<string, ScanAction[]>()
-    for (const action of visiblePending) {
-      const existing = map.get(action.category) || []
-      existing.push(action)
-      map.set(action.category, existing)
-    }
-    return [...map.entries()].sort(([, a], [, b]) => b.length - a.length)
+  // Actionable selected count (excludes "keep" actions)
+  const actionableSelectedCount = useMemo(
+    () => visiblePending.filter((a) => selected.has(a.id) && a.action_type !== 'keep').length,
+    [visiblePending, selected]
+  )
+
+  // Group actions by super-group, with sub-category breakdown
+  const superGroups = useMemo(() => {
+    return CATEGORY_GROUPS.map((group) => {
+      const catSet = new Set(group.categories as string[])
+      const groupActions = visiblePending.filter((a) => catSet.has(a.category))
+      // Sub-group by category
+      const subCategories = new Map<string, ScanAction[]>()
+      for (const action of groupActions) {
+        const existing = subCategories.get(action.category) || []
+        existing.push(action)
+        subCategories.set(action.category, existing)
+      }
+      return { ...group, actions: groupActions, subCategories }
+    }).filter((g) => g.actions.length > 0)
   }, [visiblePending])
 
-  function toggleCategory(category: string) {
-    const categoryActions = pendingActions.filter((a) => a.category === category)
-    const allSelected = categoryActions.every((a) => selected.has(a.id))
+  function toggleGroupSelect(groupCategories: string[]) {
+    const catSet = new Set(groupCategories)
+    const groupActions = visiblePending.filter((a) => catSet.has(a.category) && !PROTECTED.has(a.category))
+    const allSelected = groupActions.every((a) => selected.has(a.id))
 
     setSelected((prev) => {
       const next = new Set(prev)
-      for (const a of categoryActions) {
+      for (const a of groupActions) {
         if (allSelected) {
           next.delete(a.id)
         } else {
@@ -157,22 +161,28 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
     })
   }
 
-  function toggleCollapse(category: string) {
-    setCollapsedCategories((prev) => {
+  function toggleGroupCollapse(groupKey: string) {
+    setCollapsedGroups((prev) => {
       const next = new Set(prev)
-      if (next.has(category)) {
-        next.delete(category)
+      if (next.has(groupKey)) {
+        next.delete(groupKey)
       } else {
-        next.add(category)
+        next.add(groupKey)
       }
       return next
     })
   }
 
-  function getEffectiveAction(action: ScanAction): string {
-    // Fallback unsubscribe to archive since unsubscribe is not implemented
-    if (action.action_type === 'unsubscribe') return 'archive'
-    return action.action_type
+  function toggleSubCategories(groupKey: string) {
+    setExpandedSubCategories((prev) => {
+      const next = new Set(prev)
+      if (next.has(groupKey)) {
+        next.delete(groupKey)
+      } else {
+        next.add(groupKey)
+      }
+      return next
+    })
   }
 
   async function executeSelected() {
@@ -188,10 +198,9 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
       const selectedActions = actions.filter((a) => selected.has(a.id) && visibleIds.has(a.id))
       const byAction = new Map<string, string[]>()
       for (const action of selectedActions) {
-        const effectiveAction = getEffectiveAction(action)
-        const ids = byAction.get(effectiveAction) || []
+        const ids = byAction.get(action.action_type) || []
         ids.push(action.id)
-        byAction.set(effectiveAction, ids)
+        byAction.set(action.action_type, ids)
       }
 
       // Flatten all batches: chunk each action group into batches of 50
@@ -231,6 +240,11 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
       }
 
       setResult({ executed: totalExecuted, failed: totalFailed })
+      if (totalExecuted > 0) {
+        setUndoCount(totalExecuted)
+        // Use scan id as batch identifier for undo
+        setUndoBatchId(scan.id)
+      }
       setSelected(new Set())
       setProgress(null)
       router.refresh()
@@ -270,7 +284,7 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
     }
 
     if (failedCount > 0) {
-      setError(`${failedCount} dismissal${failedCount > 1 ? 's' : ''} failed`)
+      setError(`${failedCount} skip${failedCount > 1 ? 's' : ''} failed`)
     }
 
     setSelected(new Set())
@@ -313,10 +327,18 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
                 </svg>
               </span>
             )}
-            <span className={`text-sm font-medium ${result.failed > 0 && result.executed === 0 ? 'text-red-700' : result.failed > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>
-              {result.executed} action{result.executed !== 1 ? 's' : ''} executed.
-              {result.failed > 0 && ` ${result.failed} failed.`}
-            </span>
+            <div>
+              <span className={`text-sm font-medium ${result.failed > 0 && result.executed === 0 ? 'text-red-700' : result.failed > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>
+                {result.failed > 0 && result.executed === 0
+                  ? `${result.failed} action${result.failed !== 1 ? 's' : ''} failed.`
+                  : result.failed > 0
+                    ? `${result.executed} cleaned up, ${result.failed} failed.`
+                    : `Done! ${result.executed} email${result.executed !== 1 ? 's' : ''} cleaned up.`}
+              </span>
+              {result.failed === 0 && result.executed > 0 && (
+                <p className="text-xs text-emerald-600/70 mt-0.5">Your inbox is lighter.</p>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -343,20 +365,18 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
       )}
 
       {/* Empty state */}
-      {grouped.length === 0 && !result && (
+      {superGroups.length === 0 && !result && (
         <div className="mt-12 text-center">
           {categoryFilter ? (
             <>
-              <span className="text-4xl">{CATEGORY_CONFIG[categoryFilter]?.emoji ?? '❓'}</span>
+              <span className="text-4xl">{SHARED_CONFIG[categoryFilter as keyof typeof SHARED_CONFIG]?.emoji ?? '❓'}</span>
               <p className="mt-3 text-sm font-medium text-[#0f0f23]">
-                {scan.category_counts[categoryFilter] ?? 0} {CATEGORY_CONFIG[categoryFilter]?.label ?? categoryFilter} emails found
+                {scan.category_counts[categoryFilter] ?? 0} {SHARED_CONFIG[categoryFilter as keyof typeof SHARED_CONFIG]?.label ?? categoryFilter} emails found
               </p>
               <p className="mt-1 text-sm text-[#9898b0]">
                 {PROTECTED.has(categoryFilter)
                   ? 'These emails are protected and won\u2019t be modified.'
-                  : filteredNonPending.length > 0
-                    ? 'All actions for this category have already been processed.'
-                    : 'No actions were suggested for this category.'}
+                  : 'No actions were suggested for this category.'}
               </p>
             </>
           ) : (
@@ -372,12 +392,13 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
             <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 3c2.755 0 5.455.232 8.083.678.533.09.917.556.917 1.096v1.044a2.25 2.25 0 0 1-.659 1.591l-5.432 5.432a2.25 2.25 0 0 0-.659 1.591v2.927a2.25 2.25 0 0 1-1.244 2.013L9.75 21v-6.568a2.25 2.25 0 0 0-.659-1.591L3.659 7.409A2.25 2.25 0 0 1 3 5.818V4.774c0-.54.384-1.006.917-1.096A48.32 48.32 0 0 1 12 3Z" />
             </svg>
-            Filtered: {CATEGORY_CONFIG[categoryFilter]?.label ?? categoryFilter}
+            Filtered: {SHARED_CONFIG[categoryFilter as keyof typeof SHARED_CONFIG]?.label ?? categoryFilter}
           </span>
           <button
             onClick={() => {
               setCategoryFilter(null)
-              setCollapsedCategories(new Set())
+              setCollapsedGroups(new Set())
+              setExpandedSubCategories(new Set())
             }}
             className="inline-flex items-center gap-1 rounded-full border border-black/[0.06] bg-white/60 px-2.5 py-1.5 text-xs font-medium text-[#64648a] transition-all hover:border-black/10 hover:text-[#0f0f23]"
           >
@@ -389,31 +410,29 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
         </div>
       )}
 
-      {/* Category groups */}
+      {/* Super-groups (Clean up / Review / Safe) */}
       <div className="mt-6 space-y-4">
-        {grouped.map(([category, categoryActions]) => {
-          const config = CATEGORY_CONFIG[category] ?? CATEGORY_CONFIG.unknown
-          const isProtected = PROTECTED.has(category)
-          const allSelected = categoryActions.every((a) => selected.has(a.id))
-          const someSelected = categoryActions.some((a) => selected.has(a.id))
-          const collapsed = collapsedCategories.has(category)
-          const defaultAction = categoryActions[0]?.action_type === 'unsubscribe' ? 'archive' : (categoryActions[0]?.action_type || 'keep')
-          const currentAction = defaultAction
-          const actionConfig = ACTION_LABELS[currentAction] ?? ACTION_LABELS.keep
+        {superGroups.map((group) => {
+          const isProtectedGroup = group.key === 'safe'
+          const collapsed = collapsedGroups.has(group.key)
+          const showSub = expandedSubCategories.has(group.key)
+          const groupNonProtected = group.actions.filter((a) => !PROTECTED.has(a.category))
+          const allSelected = groupNonProtected.length > 0 && groupNonProtected.every((a) => selected.has(a.id))
+          const someSelected = groupNonProtected.some((a) => selected.has(a.id))
 
           return (
             <div
-              key={category}
-              ref={category === categoryFilter ? filteredCategoryRef : undefined}
+              key={group.key}
+              ref={group.key === initialGroup || group.categories.includes(categoryFilter as any) ? filteredCategoryRef : undefined}
               className="glass-card overflow-hidden rounded-xl"
             >
-              {/* Category header */}
+              {/* Group header */}
               <div
-                className={`flex cursor-pointer items-center justify-between bg-gradient-to-r ${config.bg} px-5 py-3.5`}
-                onClick={() => toggleCollapse(category)}
+                className={`flex cursor-pointer items-center justify-between bg-gradient-to-r ${group.gradient} px-5 py-4`}
+                onClick={() => toggleGroupCollapse(group.key)}
               >
                 <div className="flex items-center gap-3">
-                  {!isProtected && (
+                  {!isProtectedGroup && (
                     <input
                       type="checkbox"
                       checked={allSelected}
@@ -422,26 +441,25 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
                       }}
                       onChange={(e) => {
                         e.stopPropagation()
-                        toggleCategory(category)
+                        toggleGroupSelect(group.categories as string[])
                       }}
                       onClick={(e) => e.stopPropagation()}
                       className="h-4 w-4 rounded border-black/10 accent-indigo-500"
-                      aria-label={`Select all ${config.label} emails`}
+                      aria-label={`Select all ${group.label} emails`}
                     />
                   )}
-                  <span className="text-xl">{config.emoji}</span>
-                  <div className="flex items-center gap-2">
-                    <span className={`font-semibold ${config.accent}`}>{config.label}</span>
-                    <span className="font-mono text-xs text-[#9898b0]">{categoryActions.length}</span>
+                  <span className="text-xl">{group.emoji}</span>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className={`font-semibold ${group.text}`}>{group.label}</span>
+                      <span className="font-mono text-xs text-[#9898b0]">{group.actions.length}</span>
+                    </div>
+                    <p className="text-xs text-[#9898b0]">{group.description}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
-                  {isProtected ? (
+                  {isProtectedGroup && (
                     <span className="font-mono text-[10px] tracking-wider text-[#9898b0] uppercase">Protected</span>
-                  ) : (
-                    <span className={`rounded-full px-3 py-0.5 text-[11px] font-medium ${actionConfig.color}`}>
-                      {actionConfig.label}
-                    </span>
                   )}
                   <svg
                     className={`h-4 w-4 text-[#9898b0] transition-transform duration-200 ${collapsed ? '' : 'rotate-180'}`}
@@ -455,110 +473,138 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
                 </div>
               </div>
 
-              {/* Email list */}
+              {/* Group content */}
               {!collapsed && (
-                <div className="divide-y divide-black/[0.03]">
-                  {categoryActions.map((action) => (
-                    <div
-                      key={action.id}
-                      className={`flex items-center gap-3 px-5 py-3 transition-colors hover:bg-white/80 ${
-                        selected.has(action.id) ? 'bg-indigo-500/[0.03]' : ''
-                      }`}
+                <div>
+                  {/* Sub-category breakdown toggle */}
+                  {group.subCategories.size > 1 && (
+                    <button
+                      onClick={() => toggleSubCategories(group.key)}
+                      className="flex w-full items-center gap-2 border-b border-black/[0.03] px-5 py-2 text-xs text-[#9898b0] hover:text-[#64648a] transition-colors"
                     >
-                      {!isProtected && (
-                        <input
-                          type="checkbox"
-                          checked={selected.has(action.id)}
-                          onChange={() => toggleAction(action.id)}
-                          className="h-4 w-4 shrink-0 rounded border-black/10 accent-indigo-500"
-                          aria-label={`Select email from ${action.sender_name || action.sender_address}`}
-                        />
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="truncate text-sm font-medium text-[#0f0f23]">
-                            {action.sender_name || action.sender_address}
+                      <svg
+                        className={`h-3 w-3 transition-transform duration-200 ${showSub ? 'rotate-90' : ''}`}
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        strokeWidth={2}
+                        stroke="currentColor"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+                      </svg>
+                      {showSub ? 'Hide' : 'Show'} breakdown: {[...group.subCategories.entries()].map(([cat, acts]) => {
+                        const cfg = SHARED_CONFIG[cat as keyof typeof SHARED_CONFIG]
+                        return `${cfg?.emoji ?? '❓'} ${acts.length}`
+                      }).join(' · ')}
+                    </button>
+                  )}
+
+                  {/* Sub-category headers (when expanded) */}
+                  {showSub && group.subCategories.size > 1 && (
+                    <div className="border-b border-black/[0.03] bg-black/[0.01] px-5 py-2 flex flex-wrap gap-2">
+                      {[...group.subCategories.entries()].map(([cat, acts]) => {
+                        const cfg = SHARED_CONFIG[cat as keyof typeof SHARED_CONFIG] ?? SHARED_CONFIG.unknown
+                        const colors = CATEGORY_COLORS[cat]
+                        return (
+                          <span
+                            key={cat}
+                            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${colors?.bg ?? 'bg-gray-500/10'} ${colors?.text ?? 'text-gray-600'}`}
+                          >
+                            {cfg.emoji} {cfg.label} <span className="font-mono text-[10px] opacity-70">{acts.length}</span>
                           </span>
-                          {action.sender_name && (
-                            <span className="hidden truncate text-xs text-[#b0b0c0] sm:inline">
-                              {action.sender_address}
-                            </span>
-                          )}
-                        </div>
-                        <p className="truncate text-sm text-[#9898b0]">
-                          {action.subject_preview || '(no subject)'}
-                        </p>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-3">
-                        <span
-                          className={`font-mono text-xs ${action.confidence >= 0.9 ? 'text-emerald-500' : action.confidence >= 0.7 ? 'text-amber-500' : 'text-red-400'}`}
-                          title={action.confidence >= 0.9 ? 'High confidence' : action.confidence >= 0.7 ? 'Review suggested' : 'Low confidence'}
-                        >
-                          {Math.round(action.confidence * 100)}%
-                        </span>
-                        {action.email_date && (
-                          <span className="hidden text-xs text-[#b0b0c0] sm:inline">
-                            {new Date(action.email_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                          </span>
-                        )}
-                      </div>
+                        )
+                      })}
                     </div>
-                  ))}
+                  )}
+
+                  {/* Email list */}
+                  <div className="divide-y divide-black/[0.03]">
+                    {(showSub && group.subCategories.size > 1
+                      ? // When sub-categories are expanded, group emails by category
+                        [...group.subCategories.entries()].flatMap(([cat, acts]) => {
+                          const cfg = SHARED_CONFIG[cat as keyof typeof SHARED_CONFIG] ?? SHARED_CONFIG.unknown
+                          return [
+                            { type: 'header' as const, category: cat, label: cfg.label, emoji: cfg.emoji, count: acts.length },
+                            ...acts.map((a) => ({ type: 'action' as const, action: a })),
+                          ]
+                        })
+                      : // Default: flat list of all actions
+                        group.actions.map((a) => ({ type: 'action' as const, action: a }))
+                    ).map((item, idx) => {
+                      if (item.type === 'header') {
+                        const colors = CATEGORY_COLORS[item.category]
+                        return (
+                          <div
+                            key={`header-${item.category}`}
+                            className={`flex items-center gap-2 px-5 py-2 bg-gradient-to-r ${colors?.gradient ?? 'from-gray-500/8 to-gray-500/3'} border-t border-black/[0.03]`}
+                          >
+                            <span className="text-sm">{item.emoji}</span>
+                            <span className={`text-xs font-medium ${colors?.text ?? 'text-gray-600'}`}>{item.label}</span>
+                            <span className="font-mono text-[10px] text-[#9898b0]">{item.count}</span>
+                          </div>
+                        )
+                      }
+
+                      const action = item.action
+                      const rowActionConfig = ACTION_LABELS[action.action_type] ?? ACTION_LABELS.keep
+                      const isActionProtected = PROTECTED.has(action.category)
+
+                      return (
+                        <div
+                          key={action.id}
+                          className={`flex items-center gap-3 px-5 py-3 transition-colors hover:bg-white/80 ${
+                            selected.has(action.id) ? 'bg-indigo-500/[0.03]' : ''
+                          }`}
+                        >
+                          {!isActionProtected && (
+                            <input
+                              type="checkbox"
+                              checked={selected.has(action.id)}
+                              onChange={() => toggleAction(action.id)}
+                              className="h-4 w-4 shrink-0 rounded border-black/10 accent-indigo-500"
+                              aria-label={`Select email from ${action.sender_name || action.sender_address}`}
+                            />
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="truncate text-sm font-medium text-[#0f0f23]">
+                                {action.sender_name || action.sender_address}
+                              </span>
+                              {action.sender_name && (
+                                <span className="hidden truncate text-xs text-[#b0b0c0] sm:inline">
+                                  {action.sender_address}
+                                </span>
+                              )}
+                            </div>
+                            <p className="truncate text-sm text-[#9898b0]">
+                              {action.subject_preview || '(no subject)'}
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <span
+                              className={`font-mono text-xs ${action.confidence >= 0.9 ? 'text-emerald-500' : action.confidence >= 0.7 ? 'text-amber-500' : 'text-red-400'}`}
+                              title={action.confidence >= 0.9 ? 'High confidence' : action.confidence >= 0.7 ? 'Review suggested' : 'Low confidence'}
+                            >
+                              {Math.round(action.confidence * 100)}%
+                            </span>
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${rowActionConfig.color}`}>
+                              {rowActionConfig.label}
+                            </span>
+                            {action.email_date && (
+                              <span className="hidden text-xs text-[#b0b0c0] sm:inline">
+                                {new Date(action.email_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
               )}
             </div>
           )
         })}
       </div>
-
-      {/* Already processed emails for filtered category */}
-      {filteredNonPending.length > 0 && (
-        <div className="mt-4">
-          <div className="glass-card overflow-hidden rounded-xl opacity-60">
-            <div className="flex items-center justify-between bg-gradient-to-r from-gray-500/8 to-gray-500/3 px-5 py-3">
-              <div className="flex items-center gap-3">
-                <span className="text-xl">{CATEGORY_CONFIG[categoryFilter!]?.emoji ?? '❓'}</span>
-                <span className="text-sm font-medium text-[#64648a]">
-                  Already processed
-                </span>
-                <span className="font-mono text-xs text-[#9898b0]">{filteredNonPending.length}</span>
-              </div>
-              <span className="font-mono text-[10px] tracking-wider text-[#9898b0] uppercase">
-                {filteredNonPending[0]?.status}
-              </span>
-            </div>
-            <div className="divide-y divide-black/[0.03]">
-              {filteredNonPending.slice(0, 10).map((action) => (
-                <div key={action.id} className="flex items-center gap-3 px-5 py-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-sm font-medium text-[#9898b0]">
-                        {action.sender_name || action.sender_address}
-                      </span>
-                      {action.sender_name && (
-                        <span className="hidden truncate text-xs text-[#b0b0c0] sm:inline">
-                          {action.sender_address}
-                        </span>
-                      )}
-                    </div>
-                    <p className="truncate text-sm text-[#b0b0c0]">
-                      {action.subject_preview || '(no subject)'}
-                    </p>
-                  </div>
-                  <span className="shrink-0 rounded-full bg-gray-500/10 px-2 py-0.5 text-[10px] font-medium text-[#9898b0] border border-gray-500/10">
-                    {action.status}
-                  </span>
-                </div>
-              ))}
-              {filteredNonPending.length > 10 && (
-                <div className="px-5 py-3 text-center text-xs text-[#b0b0c0]">
-                  +{filteredNonPending.length - 10} more
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Sticky action bar */}
       {visiblePending.length > 0 && (
@@ -592,33 +638,60 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
               </div>
             )}
             <div className="flex items-center justify-between">
-              <p className="text-sm text-[#64648a]">
-                {progress ? (
-                  <span className="font-semibold text-[#0f0f23]">{progress.done}/{progress.total} processed</span>
-                ) : (
-                  <>
-                    <span className="font-semibold text-[#0f0f23]">{visibleSelectedCount}</span> of {visiblePending.length} selected
-                  </>
+              <div className="flex items-center gap-3">
+                <p className="text-sm text-[#64648a]">
+                  {progress ? (
+                    <span className="font-semibold text-[#0f0f23]">{progress.done}/{progress.total} processed</span>
+                  ) : (
+                    <>
+                      <span className="font-semibold text-[#0f0f23]">{visibleSelectedCount}</span> of {visiblePending.length} selected
+                    </>
+                  )}
+                </p>
+                {!progress && (
+                  <button
+                    onClick={() => {
+                      const safeActions = visiblePending.filter(
+                        (a) => a.confidence >= 0.9 && !PROTECTED.has(a.category)
+                      )
+                      setSelected((prev) => {
+                        const next = new Set(prev)
+                        for (const a of safeActions) next.add(a.id)
+                        return next
+                      })
+                    }}
+                    className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-700 transition-all hover:bg-emerald-500/20"
+                  >
+                    Select safe (&ge;90%)
+                  </button>
                 )}
-              </p>
+              </div>
               <div className="flex items-center gap-3">
                 {!progress && (
                   <button
-                    onClick={rejectSelected}
+                    onClick={() => {
+                      if (visibleSelectedCount > 50) {
+                        setShowSkipConfirmModal(true)
+                      } else {
+                        rejectSelected()
+                      }
+                    }}
                     disabled={visibleSelectedCount === 0 || executing}
                     className="rounded-lg border border-black/[0.06] bg-white/60 px-4 py-2 text-sm font-medium text-[#64648a] transition-all hover:border-black/10 hover:text-[#0f0f23] disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    Dismiss
+                    Skip
                   </button>
                 )}
                 <button
                   onClick={() => setShowConfirmModal(true)}
-                  disabled={visibleSelectedCount === 0 || executing}
+                  disabled={actionableSelectedCount === 0 || executing}
                   className="glow-button inline-flex items-center gap-2 rounded-xl px-6 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {executing
                     ? `Processing...`
-                    : `Execute ${visibleSelectedCount} Actions`
+                    : actionableSelectedCount === 0
+                      ? 'Nothing to execute'
+                      : `Execute ${actionableSelectedCount} Actions`
                   }
                 </button>
               </div>
@@ -634,31 +707,56 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
           setShowConfirmModal(false)
           executeSelected()
         }}
-        title={`Execute ${visibleSelectedCount} Actions`}
-        description="The following actions will be applied to your emails. This cannot be undone."
+        title={`Execute ${actionableSelectedCount} Actions`}
+        description="Trashed emails can be recovered from Gmail's Trash for up to 30 days."
         actions={(() => {
           const breakdown = new Map<string, number>()
           const visibleIds = new Set(visiblePending.map((a) => a.id))
           for (const action of actions) {
-            if (selected.has(action.id) && visibleIds.has(action.id)) {
-              const effective = getEffectiveAction(action)
-              breakdown.set(effective, (breakdown.get(effective) || 0) + 1)
+            if (selected.has(action.id) && visibleIds.has(action.id) && action.action_type !== 'keep') {
+              breakdown.set(action.action_type, (breakdown.get(action.action_type) || 0) + 1)
             }
           }
-          const ACTION_DISPLAY: Record<string, string> = { archive: 'Archive', move_to_trash: 'Move to Trash', mark_read: 'Mark as Read', keep: 'Keep' }
+          const ACTION_DISPLAY: Record<string, string> = { archive: 'Archive', move_to_trash: 'Move to Trash', mark_read: 'Mark as Read' }
           return [...breakdown.entries()].map(([action, count]) => ({
             label: ACTION_DISPLAY[action] || action,
             count,
             variant: action === 'move_to_trash' ? 'destructive' as const : 'default' as const,
           }))
         })()}
-        confirmText={`Execute ${visibleSelectedCount} Actions`}
+        confirmText={`Execute ${actionableSelectedCount} Actions`}
         variant={(() => {
           const visibleIds = new Set(visiblePending.map((a) => a.id))
-          const hasTrash = actions.some((a) => selected.has(a.id) && visibleIds.has(a.id) && getEffectiveAction(a) === 'move_to_trash')
+          const hasTrash = actions.some((a) => selected.has(a.id) && visibleIds.has(a.id) && a.action_type === 'move_to_trash')
           return hasTrash ? 'destructive' : 'default'
         })()}
       />
+
+      <ConfirmationModal
+        isOpen={showSkipConfirmModal}
+        onClose={() => setShowSkipConfirmModal(false)}
+        onConfirm={() => {
+          setShowSkipConfirmModal(false)
+          rejectSelected()
+        }}
+        title={`Skip ${visibleSelectedCount} emails?`}
+        description={`You're about to skip ${visibleSelectedCount} emails. These suggestions will be dismissed and won't appear again.`}
+        actions={[]}
+        confirmText={`Skip ${visibleSelectedCount} emails`}
+        variant="default"
+      />
+
+      {undoBatchId && (
+        <UndoToast
+          batchId={undoBatchId}
+          executedCount={undoCount}
+          onUndo={() => {
+            setUndoBatchId(null)
+            router.refresh()
+          }}
+          onDismiss={() => setUndoBatchId(null)}
+        />
+      )}
     </div>
   )
 }

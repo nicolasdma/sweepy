@@ -9,3 +9,4 @@ export {
 } from './heuristics'
 export { getSenderCategory, setSenderCategory, invalidateSenderCache } from './sender-cache'
 export { classifyWithLLM, estimateLLMCost } from './llm'
+export { getSuggestedActions } from './suggested-actions'

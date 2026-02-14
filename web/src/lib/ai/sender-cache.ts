@@ -99,6 +99,54 @@ export async function invalidateSenderCache(
   }
 }
 
+export async function setSenderCategoriesBatch(
+  userId: string,
+  entries: Array<{
+    senderAddress: string
+    category: EmailCategory
+    confidence: number
+    categorizedBy: CategorizationSource
+  }>
+): Promise<void> {
+  if (entries.length === 0) return
+
+  try {
+    if (redis) {
+      const pipe = redis.pipeline()
+      for (const entry of entries) {
+        const key = getCacheKey(userId, entry.senderAddress)
+        const data: CachedSenderCategory = {
+          category: entry.category,
+          confidence: entry.confidence,
+          categorizedBy: entry.categorizedBy,
+          cachedAt: Date.now(),
+        }
+        pipe.set(key, data, { ex: CACHE_TTL_SECONDS })
+      }
+      await pipe.exec()
+      return
+    }
+
+    // In-memory fallback
+    for (const entry of entries) {
+      const key = getCacheKey(userId, entry.senderAddress)
+      memoryCache.set(key, {
+        category: entry.category,
+        confidence: entry.confidence,
+        categorizedBy: entry.categorizedBy,
+        cachedAt: Date.now(),
+      })
+    }
+    // Trim if needed
+    while (memoryCache.size > MEMORY_CACHE_MAX_SIZE) {
+      const firstKey = memoryCache.keys().next().value
+      if (firstKey) memoryCache.delete(firstKey)
+    }
+  } catch (error) {
+    console.error('[SenderCache] Batch set error:', error)
+  }
+}
+
 export async function getSenderCategoriesBatch(
   userId: string,
   senderAddresses: string[]

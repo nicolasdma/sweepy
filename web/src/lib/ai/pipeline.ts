@@ -1,7 +1,6 @@
 import type { MinimalEmailData } from '@shared/types/email'
 import type { CategorizationResult } from '@shared/types/categories'
-import { applyHeuristicsBatch } from './heuristics'
-import { getSenderCategoriesBatch, setSenderCategory } from './sender-cache'
+import { getSenderCategoriesBatch, setSenderCategoriesBatch } from './sender-cache'
 import { classifyWithLLM, estimateLLMCost } from './llm'
 
 const LLM_BATCH_SIZE = 20
@@ -19,15 +18,23 @@ export interface PipelineResult {
   stats: PipelineStats
 }
 
+export interface PipelineOptions {
+  skipCache?: boolean
+  /** Called after each LLM batch completes, with total classified so far */
+  onProgress?: (classified: number, total: number) => void | Promise<void>
+}
+
 /**
- * 3-layer categorization pipeline:
- * 1. Heuristics (sync, $0) → resolves ~60-70%
- * 2. User sender cache (Redis, $0) → resolves ~15-20%
- * 3. LLM (GPT-4o-mini, ~$0.12/1K emails) → resolves rest
+ * 2-layer categorization pipeline (LLM-first):
+ * 1. Sender cache (Redis, $0) → reuses previous LLM classifications
+ * 2. LLM → classifies everything else with full context
+ *
+ * Cost: ~$0.20 per 2000 emails. Accuracy >> heuristics.
  */
 export async function categorizeEmails(
   emails: MinimalEmailData[],
-  userId: string
+  userId: string,
+  options?: PipelineOptions
 ): Promise<PipelineResult> {
   const allResults: CategorizationResult[] = []
   const stats: PipelineStats = {
@@ -38,97 +45,85 @@ export async function categorizeEmails(
     llmCostUsd: 0,
   }
 
-  console.log(`[Sweepy:Pipeline] Starting categorization for ${emails.length} emails, userId: ${userId}`)
+  console.log(`[Sweepy:Pipeline] Starting LLM-first categorization for ${emails.length} emails, userId: ${userId}`)
 
   if (emails.length === 0) {
     return { results: allResults, stats }
   }
 
-  // === Layer 1: Heuristics ===
-  const { resolved: heuristicResolved, unresolved: afterHeuristics } =
-    applyHeuristicsBatch(emails)
+  // === Layer 1: Sender Cache ===
+  let uncached: MinimalEmailData[]
 
-  allResults.push(...heuristicResolved)
-  stats.resolvedByHeuristic = heuristicResolved.length
-  console.log(`[Sweepy:Pipeline] Layer 1 (Heuristics): resolved ${heuristicResolved.length}, unresolved ${afterHeuristics.length}`)
+  if (options?.skipCache) {
+    console.log(`[Sweepy:Pipeline] Cache SKIPPED (skipCache=true)`)
+    uncached = emails
+  } else {
+    const senderAddresses = emails.map((e) => e.from.address)
+    const cachedCategories = await getSenderCategoriesBatch(userId, senderAddresses)
 
-  // Cache heuristic results for future lookups
-  for (const result of heuristicResolved) {
-    const email = emails.find((e) => e.id === result.emailId)
-    if (email) {
-      await setSenderCategory(
-        userId,
-        email.from.address,
-        result.category,
-        result.confidence,
-        'heuristic'
-      )
+    uncached = []
+
+    for (const email of emails) {
+      const cached = cachedCategories.get(email.from.address.toLowerCase())
+      if (cached && cached.confidence >= 0.85) {
+        allResults.push({
+          emailId: email.id,
+          category: cached.category,
+          confidence: cached.confidence,
+          source: 'cache',
+          reasoning: `Cached from previous ${cached.categorizedBy} classification`,
+          suggestedActions: [],
+        })
+        stats.resolvedByCache++
+      } else {
+        uncached.push(email)
+      }
+    }
+
+    console.log(`[Sweepy:Pipeline] Layer 1 (Cache): resolved ${stats.resolvedByCache}, uncached ${uncached.length}`)
+
+    // Report cache progress
+    if (stats.resolvedByCache > 0 && options?.onProgress) {
+      await options.onProgress(allResults.length, emails.length)
+    }
+
+    if (uncached.length === 0) {
+      return { results: allResults, stats }
     }
   }
 
-  if (afterHeuristics.length === 0) {
-    return { results: allResults, stats }
-  }
-
-  // === Layer 2: User Sender Cache ===
-  const senderAddresses = afterHeuristics.map((e) => e.from.address)
-  const cachedCategories = await getSenderCategoriesBatch(
-    userId,
-    senderAddresses
-  )
-
-  const afterCache: MinimalEmailData[] = []
-
-  for (const email of afterHeuristics) {
-    const cached = cachedCategories.get(email.from.address.toLowerCase())
-    if (cached && cached.confidence >= 0.80) {
-      allResults.push({
-        emailId: email.id,
-        category: cached.category,
-        confidence: cached.confidence,
-        source: 'cache',
-        reasoning: `Cached from previous ${cached.categorizedBy} classification`,
-        suggestedActions: [], // Will be filled by the action suggestion logic
-      })
-      stats.resolvedByCache++
-    } else {
-      afterCache.push(email)
-    }
-  }
-
-  console.log(`[Sweepy:Pipeline] Layer 2 (Cache): resolved ${stats.resolvedByCache}, unresolved ${afterCache.length}`)
-
-  if (afterCache.length === 0) {
-    return { results: allResults, stats }
-  }
-
-  // === Layer 3: LLM ===
-  // Process in batches of LLM_BATCH_SIZE
-  for (let i = 0; i < afterCache.length; i += LLM_BATCH_SIZE) {
-    const batch = afterCache.slice(i, i + LLM_BATCH_SIZE)
+  // === Layer 2: LLM ===
+  for (let i = 0; i < uncached.length; i += LLM_BATCH_SIZE) {
+    const batch = uncached.slice(i, i + LLM_BATCH_SIZE)
 
     const llmResults = await classifyWithLLM(batch)
     allResults.push(...llmResults)
     stats.resolvedByLlm += llmResults.length
     stats.llmCostUsd += estimateLLMCost(batch.length)
 
-    // Cache LLM results for future lookups
-    for (const result of llmResults) {
-      const email = batch.find((e) => e.id === result.emailId)
-      if (email && result.category !== 'unknown') {
-        await setSenderCategory(
-          userId,
-          email.from.address,
-          result.category,
-          result.confidence,
-          'llm'
-        )
-      }
+    // Report progress after each batch
+    if (options?.onProgress) {
+      await options.onProgress(allResults.length, emails.length)
     }
+
+    // Cache LLM results for future scans
+    const cacheEntries = llmResults
+      .filter((r) => r.category !== 'unknown')
+      .map((result) => {
+        const email = batch.find((e) => e.id === result.emailId)
+        return email ? {
+          senderAddress: email.from.address,
+          category: result.category,
+          confidence: result.confidence,
+          categorizedBy: 'llm' as const,
+        } : null
+      })
+      .filter((e): e is NonNullable<typeof e> => e !== null)
+    await setSenderCategoriesBatch(userId, cacheEntries)
   }
 
-  console.log(`[Sweepy:Pipeline] Layer 3 (LLM): resolved ${stats.resolvedByLlm}, cost $${stats.llmCostUsd.toFixed(4)}`)
-  console.log(`[Sweepy:Pipeline] Complete — total: ${allResults.length}, heuristic: ${stats.resolvedByHeuristic}, cache: ${stats.resolvedByCache}, llm: ${stats.resolvedByLlm}`)
+  console.log(`[Sweepy:Pipeline] Layer 2 (LLM): resolved ${stats.resolvedByLlm}, cost $${stats.llmCostUsd.toFixed(4)}`)
+  console.log(`[Sweepy:Pipeline] Complete — total: ${allResults.length}, cache: ${stats.resolvedByCache}, llm: ${stats.resolvedByLlm}`)
 
   return { results: allResults, stats }
 }

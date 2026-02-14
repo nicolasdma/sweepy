@@ -13,6 +13,7 @@ export default async function ScanPage({
   const { id } = await params
   const query = await searchParams
   const initialCategory = typeof query.category === 'string' ? query.category : undefined
+  const initialGroup = typeof query.group === 'string' ? query.group : undefined
   const supabase = await createServerSupabaseClient()
 
   const {
@@ -66,7 +67,7 @@ export default async function ScanPage({
         Back to Dashboard
       </Link>
 
-      <ScanResults scan={scan} actions={actions ?? []} initialCategory={initialCategory} />
+      <ScanResults scan={scan} actions={actions ?? []} initialCategory={initialCategory} initialGroup={initialGroup} />
     </div>
   )
 }

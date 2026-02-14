@@ -1,21 +1,18 @@
+import { CONFIG } from './config'
+
 interface TokenData {
   token: string
   expiresAt: number // Unix timestamp ms
+  email?: string // Extracted from JWT payload at login time
 }
-
-const TOKEN_KEY = 'sweepy:token'
-const APP_URL = 'http://localhost:3000' // TODO: make configurable via remote config
-
-// Supabase config for chrome.identity OAuth flow
-const SUPABASE_URL = 'https://gqxukcahhmrrsbmvrygy.supabase.co'
 
 export class AuthManager {
   private tokenData: TokenData | null = null
 
   async init(): Promise<boolean> {
     try {
-      const result = await chrome.storage.session.get(TOKEN_KEY)
-      const data = result[TOKEN_KEY] as TokenData | undefined
+      const result = await chrome.storage.session.get(CONFIG.STORAGE_KEYS.TOKEN)
+      const data = result[CONFIG.STORAGE_KEYS.TOKEN] as TokenData | undefined
 
       if (data?.token && Date.now() < data.expiresAt) {
         this.tokenData = data
@@ -26,7 +23,7 @@ export class AuthManager {
       // Token expired or missing — clear stale data
       if (data) {
         console.log('[Sweepy:Auth] Token expired, clearing')
-        await chrome.storage.session.remove(TOKEN_KEY)
+        await chrome.storage.session.remove(CONFIG.STORAGE_KEYS.TOKEN)
       } else {
         console.log('[Sweepy:Auth] No token in storage')
       }
@@ -54,18 +51,39 @@ export class AuthManager {
   }
 
   async setToken(token: string, expiresIn: number) {
+    // Extract email from JWT payload (base64url-encoded middle segment)
+    const email = this.extractEmailFromJwt(token)
+
     this.tokenData = {
       token,
       expiresAt: Date.now() + expiresIn * 1000,
+      email: email || undefined,
     }
 
-    await chrome.storage.session.set({ [TOKEN_KEY]: this.tokenData })
-    console.log('[Sweepy:Auth] Token stored (expires in', expiresIn, 'seconds)')
+    await chrome.storage.session.set({ [CONFIG.STORAGE_KEYS.TOKEN]: this.tokenData })
+    console.log('[Sweepy:Auth] Token stored (expires in', expiresIn, 'seconds, email:', email || 'unknown', ')')
+  }
+
+  /** Best-effort decode of the JWT payload to extract the email. */
+  private extractEmailFromJwt(token: string): string | null {
+    try {
+      const parts = token.split('.')
+      if (parts.length !== 3) return null
+      const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))
+      return payload.email || null
+    } catch {
+      return null
+    }
+  }
+
+  /** Get the authenticated user's email (extracted from JWT at login). */
+  getEmail(): string | null {
+    return this.tokenData?.email || null
   }
 
   async logout() {
     this.tokenData = null
-    await chrome.storage.session.remove(TOKEN_KEY)
+    await chrome.storage.session.remove(CONFIG.STORAGE_KEYS.TOKEN)
     console.log('[Sweepy:Auth] Logged out, token cleared')
   }
 
@@ -74,11 +92,11 @@ export class AuthManager {
   }
 
   getLoginUrl(): string {
-    return `${APP_URL}/login?from=extension`
+    return `${CONFIG.APP_URL}/login?from=extension`
   }
 
   getAppUrl(): string {
-    return APP_URL
+    return CONFIG.APP_URL
   }
 
   /**
@@ -98,7 +116,7 @@ export class AuthManager {
    */
   async loginWithIdentity(): Promise<boolean> {
     // launchWebAuthFlow can't load HTTP pages — skip on localhost
-    if (APP_URL.startsWith('http://')) {
+    if (CONFIG.APP_URL.startsWith('http://')) {
       console.log('[Sweepy:Auth] Skipping launchWebAuthFlow (HTTP not supported), using tab-based login')
       throw new Error('launchWebAuthFlow requires HTTPS — falling back to tab login')
     }
@@ -108,11 +126,11 @@ export class AuthManager {
     const callbackUrl = chrome.identity.getRedirectURL('callback')
     console.log('[Sweepy:Auth] Callback URL:', callbackUrl)
 
-    const authUrl = new URL(`${SUPABASE_URL}/auth/v1/authorize`)
+    const authUrl = new URL(`${CONFIG.SUPABASE_URL}/auth/v1/authorize`)
     authUrl.searchParams.set('provider', 'google')
     authUrl.searchParams.set(
       'redirect_to',
-      `${APP_URL}/auth/callback?from=extension&redirect_uri=${encodeURIComponent(callbackUrl)}`
+      `${CONFIG.APP_URL}/auth/callback?from=extension&redirect_uri=${encodeURIComponent(callbackUrl)}`
     )
 
     console.log('[Sweepy:Auth] Opening OAuth URL:', authUrl.toString())

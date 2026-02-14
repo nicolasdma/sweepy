@@ -61,6 +61,7 @@ async function verifyWithStripe(
   }
 
   try {
+    if (!stripe) return false
     const subscription = await stripe.subscriptions.retrieve(subscriptionId)
     const isActive =
       subscription.status === 'active' ||
