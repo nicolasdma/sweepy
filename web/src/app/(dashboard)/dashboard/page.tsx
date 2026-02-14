@@ -48,7 +48,7 @@ export default async function DashboardPage({
   const [profileResult, scansResult, pendingActionsResult] = await Promise.all([
     supabase
       .from('profiles')
-      .select('gmail_connected, auto_scan_enabled, auto_scan_frequency, digest_email_enabled')
+      .select('gmail_connected')
       .eq('id', user!.id)
       .single(),
     supabase
@@ -293,9 +293,9 @@ export default async function DashboardPage({
           {/* Settings */}
           <div className="mt-10 animate-fade-in-up-d2">
             <SettingsPanel
-              autoScanEnabled={profile?.auto_scan_enabled ?? false}
-              autoScanFrequency={profile?.auto_scan_frequency ?? 'weekly'}
-              digestEmailEnabled={profile?.digest_email_enabled ?? true}
+              autoScanEnabled={false}
+              autoScanFrequency={'weekly'}
+              digestEmailEnabled={true}
             />
           </div>
         </>
