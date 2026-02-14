@@ -1,26 +1,22 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import Link from 'next/link'
 import { ScanButton } from './scan-button'
+import { SettingsPanel } from './settings-panel'
+import { CATEGORY_CONFIG as SHARED_CONFIG, CATEGORY_COLORS, PROTECTED_CATEGORIES } from '@shared/config/categories'
 
-const CATEGORY_CONFIG: Record<string, { label: string; emoji: string; gradient: string; accent: string }> = {
-  newsletter: { label: 'Newsletters', emoji: '📰', gradient: 'from-blue-500/10 to-blue-500/5', accent: 'text-blue-600' },
-  marketing: { label: 'Marketing', emoji: '🛍️', gradient: 'from-purple-500/10 to-purple-500/5', accent: 'text-purple-600' },
-  transactional: { label: 'Transactional', emoji: '🧾', gradient: 'from-emerald-500/10 to-emerald-500/5', accent: 'text-emerald-600' },
-  social: { label: 'Social', emoji: '📱', gradient: 'from-pink-500/10 to-pink-500/5', accent: 'text-pink-600' },
-  notification: { label: 'Notifications', emoji: '🔔', gradient: 'from-amber-500/10 to-amber-500/5', accent: 'text-amber-600' },
-  spam: { label: 'Spam', emoji: '🗑️', gradient: 'from-red-500/10 to-red-500/5', accent: 'text-red-600' },
-  personal: { label: 'Personal', emoji: '✉️', gradient: 'from-indigo-500/10 to-indigo-500/5', accent: 'text-indigo-600' },
-  important: { label: 'Important', emoji: '⭐', gradient: 'from-emerald-500/10 to-emerald-500/5', accent: 'text-emerald-600' },
-  unknown: { label: 'Unknown', emoji: '❓', gradient: 'from-gray-500/10 to-gray-500/5', accent: 'text-gray-600' },
-}
+const CATEGORY_CONFIG: Record<string, { label: string; emoji: string; gradient: string; accent: string }> = Object.fromEntries(
+  Object.entries(SHARED_CONFIG).map(([key, cfg]) => [
+    key,
+    {
+      label: cfg.label,
+      emoji: cfg.emoji,
+      gradient: CATEGORY_COLORS[key]?.gradient ?? 'from-gray-500/8 to-gray-500/3',
+      accent: CATEGORY_COLORS[key]?.text ?? 'text-gray-600',
+    },
+  ])
+)
 
-const PROTECTED = new Set(['personal', 'important'])
-
-const STATUS_STYLES: Record<string, string> = {
-  completed: 'bg-emerald-500/10 text-emerald-700 border border-emerald-500/20',
-  running: 'bg-amber-500/10 text-amber-700 border border-amber-500/20',
-  failed: 'bg-red-500/10 text-red-700 border border-red-500/20',
-}
+const PROTECTED = PROTECTED_CATEGORIES as Set<string>
 
 function formatDate(dateStr: string): string {
   const date = new Date(dateStr)
@@ -52,7 +48,7 @@ export default async function DashboardPage({
   const [profileResult, scansResult, pendingActionsResult] = await Promise.all([
     supabase
       .from('profiles')
-      .select('gmail_connected')
+      .select('gmail_connected, auto_scan_enabled, auto_scan_frequency, digest_email_enabled')
       .eq('id', user!.id)
       .single(),
     supabase
@@ -65,15 +61,13 @@ export default async function DashboardPage({
       .eq('status', 'pending'),
   ])
 
-  const gmailConnected = profileResult.data?.gmail_connected ?? false
+  const profile = profileResult.data
+  const gmailConnected = profile?.gmail_connected ?? false
   const scans = scansResult.data ?? []
   const pendingCount = pendingActionsResult.count ?? 0
 
-  const totalEmailsScanned = scans.reduce((sum, s) => sum + (s.total_emails_scanned ?? 0), 0)
-  const totalScans = scans.length
   const latestCompleted = scans.find((s) => s.status === 'completed')
   const scanCategoryCounts: Record<string, number> = latestCompleted?.category_counts ?? {}
-  const recentScans = scans.slice(0, 5)
 
   // Fetch LIVE pending counts per category (not the stale scan snapshot)
   const pendingByCategory: Record<string, number> = {}
@@ -98,7 +92,6 @@ export default async function DashboardPage({
 
   // Merge: show all categories from scan, with live pending counts
   const allCategories = Object.keys(scanCategoryCounts)
-  const totalScanned = Object.values(scanCategoryCounts).reduce((a, b) => a + b, 0)
   const totalPendingInScan = Object.values(pendingByCategory).reduce((a, b) => a + b, 0)
   const hasCategories = allCategories.length > 0
 
@@ -116,17 +109,6 @@ export default async function DashboardPage({
               : 'Connect Gmail to start cleaning your inbox.'}
           </p>
         </div>
-        {gmailConnected && (
-          <Link
-            href="/compare"
-            className="hidden sm:inline-flex items-center gap-2 rounded-lg border border-black/[0.06] bg-white/60 px-4 py-2.5 text-sm font-medium text-[#64648a] backdrop-blur-sm transition-all hover:border-indigo-500/20 hover:text-[#0f0f23]"
-          >
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
-            </svg>
-            Compare
-          </Link>
-        )}
       </div>
 
       {/* Gmail connection status banner */}
@@ -163,9 +145,9 @@ export default async function DashboardPage({
               <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75" />
             </svg>
           </div>
-          <h3 className="mt-6 text-xl font-semibold text-[#0f0f23]">Connect your Gmail</h3>
+          <h3 className="mt-6 text-xl font-semibold text-[#0f0f23]">Your account is ready</h3>
           <p className="mt-2 max-w-sm text-sm text-[#64648a]">
-            We need read-only access to your emails to help you clean your inbox with AI.
+            Connect Gmail so we can scan your inbox. We only read metadata (sender, subject, date) — never the full email body.
           </p>
           <a
             href="/api/auth/gmail"
@@ -183,17 +165,7 @@ export default async function DashboardPage({
       {gmailConnected && (
         <>
           {/* Stats row */}
-          <div className="mt-8 grid gap-4 sm:grid-cols-3 animate-fade-in-up-d1">
-            <div className="glass-card rounded-xl p-5">
-              <p className="font-mono text-[11px] tracking-wider text-[#9898b0] uppercase">Total Scanned</p>
-              <p className="mt-2 text-2xl font-bold text-[#0f0f23]">{formatNumber(totalEmailsScanned)}</p>
-              <p className="mt-1 text-xs text-[#9898b0]">emails analyzed</p>
-            </div>
-            <div className="glass-card rounded-xl p-5">
-              <p className="font-mono text-[11px] tracking-wider text-[#9898b0] uppercase">Scans Run</p>
-              <p className="mt-2 text-2xl font-bold text-[#0f0f23]">{totalScans}</p>
-              <p className="mt-1 text-xs text-[#9898b0]">total scans</p>
-            </div>
+          <div className="mt-8 grid gap-4 sm:grid-cols-2 animate-fade-in-up-d1">
             <div className="glass-card rounded-xl p-5">
               <p className="font-mono text-[11px] tracking-wider text-[#9898b0] uppercase">Pending Actions</p>
               <p className="mt-2 text-2xl font-bold text-[#0f0f23]">
@@ -204,6 +176,15 @@ export default async function DashboardPage({
                 )}
               </p>
               <p className="mt-1 text-xs text-[#9898b0]">emails to review</p>
+            </div>
+            <div className="glass-card rounded-xl p-5">
+              <p className="font-mono text-[11px] tracking-wider text-[#9898b0] uppercase">Last Scan</p>
+              <p className="mt-2 text-2xl font-bold text-[#0f0f23]">
+                {latestCompleted ? formatNumber(latestCompleted.total_emails_scanned ?? 0) : '—'}
+              </p>
+              <p className="mt-1 text-xs text-[#9898b0]">
+                {latestCompleted ? `${formatDate(latestCompleted.created_at)}` : 'No scans yet'}
+              </p>
             </div>
           </div>
 
@@ -242,21 +223,11 @@ export default async function DashboardPage({
                     .map((category) => {
                       const count = pendingByCategory[category] ?? 0
                       const pct = totalPendingInScan > 0 ? (count / totalPendingInScan) * 100 : 0
-                      const colors: Record<string, string> = {
-                        newsletter: 'bg-blue-400',
-                        marketing: 'bg-purple-400',
-                        transactional: 'bg-emerald-400',
-                        social: 'bg-pink-400',
-                        notification: 'bg-amber-400',
-                        spam: 'bg-red-400',
-                        personal: 'bg-indigo-400',
-                        important: 'bg-emerald-500',
-                        unknown: 'bg-gray-400',
-                      }
+                      const barColor = CATEGORY_COLORS[category]?.bar ?? 'bg-gray-400'
                       return (
                         <div
                           key={category}
-                          className={`${colors[category] ?? 'bg-gray-400'} transition-all duration-700 first:rounded-l-full last:rounded-r-full`}
+                          className={`${barColor} transition-all duration-700 first:rounded-l-full last:rounded-r-full`}
                           style={{ width: `${pct}%` }}
                           title={`${CATEGORY_CONFIG[category]?.label}: ${count} pending`}
                         />
@@ -319,58 +290,14 @@ export default async function DashboardPage({
             </div>
           )}
 
-          {/* Scan history */}
-          {recentScans.length > 0 && (
-            <div className="mt-10 animate-fade-in-up-d3">
-              <h2 className="text-lg font-semibold text-[#0f0f23]">Scan History</h2>
-              <div className="mt-4 glass-card overflow-hidden rounded-xl">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-black/[0.04]">
-                      <th className="px-5 py-3.5 text-left font-mono text-[11px] tracking-wider text-[#9898b0] uppercase">Date</th>
-                      <th className="px-5 py-3.5 text-left font-mono text-[11px] tracking-wider text-[#9898b0] uppercase">Emails</th>
-                      <th className="px-5 py-3.5 text-left font-mono text-[11px] tracking-wider text-[#9898b0] uppercase">Pipeline</th>
-                      <th className="px-5 py-3.5 text-left font-mono text-[11px] tracking-wider text-[#9898b0] uppercase">Status</th>
-                      <th className="px-5 py-3.5 text-right font-mono text-[11px] tracking-wider text-[#9898b0] uppercase"></th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-black/[0.03]">
-                    {recentScans.map((scan) => (
-                      <tr key={scan.id} className="transition-colors hover:bg-white/50">
-                        <td className="px-5 py-4 text-[#64648a]">{formatDate(scan.created_at)}</td>
-                        <td className="px-5 py-4 font-medium text-[#0f0f23]">{formatNumber(scan.total_emails_scanned ?? 0)}</td>
-                        <td className="px-5 py-4">
-                          {scan.status === 'completed' && (
-                            <span className="text-xs text-[#9898b0]">
-                              {scan.resolved_by_cache ?? 0} cache · {scan.resolved_by_llm ?? 0} AI
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-5 py-4">
-                          <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_STYLES[scan.status] ?? 'bg-gray-100 text-gray-700'}`}>
-                            {scan.status === 'running' && (
-                              <span className="mr-1.5 h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
-                            )}
-                            {scan.status}
-                          </span>
-                        </td>
-                        <td className="px-5 py-4 text-right">
-                          {scan.status === 'completed' && (
-                            <Link
-                              href={`/scan/${scan.id}`}
-                              className="text-sm font-medium text-indigo-600 transition-colors hover:text-indigo-800"
-                            >
-                              View results
-                            </Link>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+          {/* Settings */}
+          <div className="mt-10 animate-fade-in-up-d2">
+            <SettingsPanel
+              autoScanEnabled={profile?.auto_scan_enabled ?? false}
+              autoScanFrequency={profile?.auto_scan_frequency ?? 'weekly'}
+              digestEmailEnabled={profile?.digest_email_enabled ?? true}
+            />
+          </div>
         </>
       )}
     </div>

@@ -24,10 +24,10 @@ function LoginForm() {
   }
 
   return (
-    <div className="w-full max-w-sm rounded-lg border border-gray-200 bg-white p-8 shadow-sm">
+    <div className="w-full max-w-sm rounded-lg border border-black/[0.06] bg-white/80 backdrop-blur-xl p-8">
       <div className="text-center">
-        <h1 className="text-2xl font-bold text-gray-900">Sweepy</h1>
-        <p className="mt-2 text-sm text-gray-600">
+        <h1 className="text-2xl font-bold text-[#0f0f23]">Sweepy</h1>
+        <p className="mt-2 text-sm text-[#64648a]">
           Sign in to manage your inbox with AI
         </p>
       </div>
@@ -57,7 +57,7 @@ function LoginForm() {
         Continue with Google
       </button>
 
-      <p className="mt-6 text-center text-xs text-gray-500">
+      <p className="mt-6 text-center text-xs text-[#9898b0]">
         By signing in, you agree to our{' '}
         <a href="/terms" className="underline">
           Terms of Service
@@ -73,13 +73,13 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50">
+    <div className="flex min-h-screen items-center justify-center bg-[#fafaf8]">
       <Suspense
         fallback={
-          <div className="w-full max-w-sm rounded-lg border border-gray-200 bg-white p-8 shadow-sm">
+          <div className="w-full max-w-sm rounded-lg border border-black/[0.06] bg-white/80 backdrop-blur-xl p-8">
             <div className="text-center">
-              <h1 className="text-2xl font-bold text-gray-900">Sweepy</h1>
-              <p className="mt-2 text-sm text-gray-600">Loading...</p>
+              <h1 className="text-2xl font-bold text-[#0f0f23]">Sweepy</h1>
+              <p className="mt-2 text-sm text-[#64648a]">Loading...</p>
             </div>
           </div>
         }

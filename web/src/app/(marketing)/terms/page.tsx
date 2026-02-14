@@ -9,14 +9,14 @@ export const metadata: Metadata = {
 export default function TermsPage() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-16 sm:px-6 lg:px-8">
-      <h1 className="text-3xl font-bold tracking-tight text-gray-900">
+      <h1 className="text-3xl font-bold tracking-tight text-[#0f0f23]">
         Terms of Service
       </h1>
-      <p className="mt-2 text-sm text-gray-500">
+      <p className="mt-2 text-sm text-[#9898b0]">
         Last updated: February 12, 2026
       </p>
 
-      <div className="mt-10 space-y-10 text-base leading-7 text-gray-700">
+      <div className="mt-10 space-y-10 text-base leading-7 text-[#64648a]">
         {/* Intro */}
         <section>
           <p>
@@ -30,7 +30,7 @@ export default function TermsPage() {
 
         {/* Service description */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             1. Service Description
           </h2>
           <p className="mt-3">
@@ -43,7 +43,7 @@ export default function TermsPage() {
             The Service requires a Google account and access to your Gmail via
             the Gmail API. By using Sweepy, you authorize us to access your
             email metadata as described in our{' '}
-            <a href="/privacy" className="text-blue-600 hover:underline">
+            <a href="/privacy" className="text-indigo-500 hover:text-indigo-600 hover:underline">
               Privacy Policy
             </a>
             .
@@ -52,7 +52,7 @@ export default function TermsPage() {
 
         {/* Account */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             2. Account Registration
           </h2>
           <p className="mt-3">
@@ -65,7 +65,7 @@ export default function TermsPage() {
 
         {/* Free trial */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             3. Free Trial
           </h2>
           <p className="mt-3">
@@ -83,7 +83,7 @@ export default function TermsPage() {
 
         {/* Pricing and billing */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             4. Pricing and Billing
           </h2>
           <p className="mt-3">
@@ -105,7 +105,7 @@ export default function TermsPage() {
 
         {/* Acceptable use */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             5. Acceptable Use
           </h2>
           <p className="mt-3">You agree not to:</p>
@@ -138,7 +138,7 @@ export default function TermsPage() {
 
         {/* Intellectual property */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             6. Intellectual Property
           </h2>
           <p className="mt-3">
@@ -155,7 +155,7 @@ export default function TermsPage() {
 
         {/* Limitation of liability */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             7. Limitation of Liability
           </h2>
           <p className="mt-3">
@@ -185,7 +185,7 @@ export default function TermsPage() {
 
         {/* Disclaimer */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             8. Disclaimer
           </h2>
           <p className="mt-3">
@@ -198,14 +198,14 @@ export default function TermsPage() {
 
         {/* Termination */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             9. Termination
           </h2>
           <p className="mt-3">
             You may terminate your account at any time by contacting us at{' '}
             <a
               href="mailto:privacy@sweepy.site"
-              className="text-blue-600 hover:underline"
+              className="text-indigo-500 hover:text-indigo-600 hover:underline"
             >
               privacy@sweepy.site
             </a>{' '}
@@ -223,7 +223,7 @@ export default function TermsPage() {
             </li>
             <li>
               Your data will be deleted in accordance with our{' '}
-              <a href="/privacy" className="text-blue-600 hover:underline">
+              <a href="/privacy" className="text-indigo-500 hover:text-indigo-600 hover:underline">
                 Privacy Policy
               </a>
             </li>
@@ -232,7 +232,7 @@ export default function TermsPage() {
 
         {/* Modifications */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             10. Modifications to the Service
           </h2>
           <p className="mt-3">
@@ -244,7 +244,7 @@ export default function TermsPage() {
 
         {/* Changes to terms */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             11. Changes to These Terms
           </h2>
           <p className="mt-3">
@@ -258,7 +258,7 @@ export default function TermsPage() {
 
         {/* Governing law */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             12. Governing Law
           </h2>
           <p className="mt-3">
@@ -270,14 +270,14 @@ export default function TermsPage() {
 
         {/* Contact */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">13. Contact</h2>
+          <h2 className="text-xl font-semibold text-[#0f0f23]">13. Contact</h2>
           <p className="mt-3">
             If you have any questions about these Terms, please contact us at:
           </p>
           <p className="mt-3">
             <a
               href="mailto:privacy@sweepy.site"
-              className="text-blue-600 hover:underline"
+              className="text-indigo-500 hover:text-indigo-600 hover:underline"
             >
               privacy@sweepy.site
             </a>

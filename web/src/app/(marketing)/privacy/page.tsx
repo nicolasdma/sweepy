@@ -9,14 +9,14 @@ export const metadata: Metadata = {
 export default function PrivacyPage() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-16 sm:px-6 lg:px-8">
-      <h1 className="text-3xl font-bold tracking-tight text-gray-900">
+      <h1 className="text-3xl font-bold tracking-tight text-[#0f0f23]">
         Privacy Policy
       </h1>
-      <p className="mt-2 text-sm text-gray-500">
+      <p className="mt-2 text-sm text-[#9898b0]">
         Last updated: February 12, 2026
       </p>
 
-      <div className="mt-10 space-y-10 text-base leading-7 text-gray-700">
+      <div className="mt-10 space-y-10 text-base leading-7 text-[#64648a]">
         {/* Intro */}
         <section>
           <p>
@@ -29,7 +29,7 @@ export default function PrivacyPage() {
 
         {/* What we collect */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             1. What Data We Collect
           </h2>
           <p className="mt-3">
@@ -60,7 +60,7 @@ export default function PrivacyPage() {
 
         {/* What we send to OpenAI */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             2. What We Send to OpenAI
           </h2>
           <p className="mt-3">
@@ -79,7 +79,7 @@ export default function PrivacyPage() {
             per their{' '}
             <a
               href="https://openai.com/policies/api-data-usage-policies"
-              className="text-blue-600 hover:underline"
+              className="text-indigo-500 hover:text-indigo-600 hover:underline"
               target="_blank"
               rel="noopener noreferrer"
             >
@@ -91,7 +91,7 @@ export default function PrivacyPage() {
 
         {/* Data retention */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             3. Data Retention
           </h2>
           <p className="mt-3">
@@ -108,7 +108,7 @@ export default function PrivacyPage() {
 
         {/* No selling */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             4. We Do Not Sell Your Data
           </h2>
           <p className="mt-3">
@@ -121,7 +121,7 @@ export default function PrivacyPage() {
 
         {/* Security */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             5. Data Security
           </h2>
           <p className="mt-3">
@@ -138,7 +138,7 @@ export default function PrivacyPage() {
 
         {/* GDPR */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             6. Your Rights (GDPR)
           </h2>
           <p className="mt-3">
@@ -175,7 +175,7 @@ export default function PrivacyPage() {
             To exercise any of these rights, please contact us at{' '}
             <a
               href="mailto:privacy@sweepy.site"
-              className="text-blue-600 hover:underline"
+              className="text-indigo-500 hover:text-indigo-600 hover:underline"
             >
               privacy@sweepy.site
             </a>
@@ -185,7 +185,7 @@ export default function PrivacyPage() {
 
         {/* Cookies */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">7. Cookies</h2>
+          <h2 className="text-xl font-semibold text-[#0f0f23]">7. Cookies</h2>
           <p className="mt-3">
             We use essential cookies only — to manage your authentication
             session and remember your preferences. We do not use tracking
@@ -195,7 +195,7 @@ export default function PrivacyPage() {
 
         {/* Children */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             8. Children&apos;s Privacy
           </h2>
           <p className="mt-3">
@@ -206,7 +206,7 @@ export default function PrivacyPage() {
 
         {/* Changes */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[#0f0f23]">
             9. Changes to This Policy
           </h2>
           <p className="mt-3">
@@ -218,7 +218,7 @@ export default function PrivacyPage() {
 
         {/* Contact */}
         <section>
-          <h2 className="text-xl font-semibold text-gray-900">10. Contact</h2>
+          <h2 className="text-xl font-semibold text-[#0f0f23]">10. Contact</h2>
           <p className="mt-3">
             If you have any questions about this Privacy Policy, please contact
             us at:
@@ -226,7 +226,7 @@ export default function PrivacyPage() {
           <p className="mt-3">
             <a
               href="mailto:privacy@sweepy.site"
-              className="text-blue-600 hover:underline"
+              className="text-indigo-500 hover:text-indigo-600 hover:underline"
             >
               privacy@sweepy.site
             </a>

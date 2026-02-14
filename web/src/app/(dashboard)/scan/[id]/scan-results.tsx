@@ -1,19 +1,21 @@
 'use client'
 
 import { useState, useMemo, useEffect, useRef } from 'react'
+import { CATEGORY_CONFIG as SHARED_CONFIG, CATEGORY_COLORS, PROTECTED_CATEGORIES } from '@shared/config/categories'
+import { ConfirmationModal } from '@/components/confirmation-modal'
 import { useRouter } from 'next/navigation'
 
-const CATEGORY_CONFIG: Record<string, { label: string; emoji: string; accent: string; bg: string }> = {
-  newsletter: { label: 'Newsletters', emoji: '📰', accent: 'text-blue-600', bg: 'from-blue-500/8 to-blue-500/3' },
-  marketing: { label: 'Marketing', emoji: '🛍️', accent: 'text-purple-600', bg: 'from-purple-500/8 to-purple-500/3' },
-  transactional: { label: 'Transactional', emoji: '🧾', accent: 'text-emerald-600', bg: 'from-emerald-500/8 to-emerald-500/3' },
-  social: { label: 'Social', emoji: '📱', accent: 'text-pink-600', bg: 'from-pink-500/8 to-pink-500/3' },
-  notification: { label: 'Notifications', emoji: '🔔', accent: 'text-amber-600', bg: 'from-amber-500/8 to-amber-500/3' },
-  spam: { label: 'Spam', emoji: '🗑️', accent: 'text-red-600', bg: 'from-red-500/8 to-red-500/3' },
-  personal: { label: 'Personal', emoji: '✉️', accent: 'text-indigo-600', bg: 'from-indigo-500/8 to-indigo-500/3' },
-  important: { label: 'Important', emoji: '⭐', accent: 'text-emerald-600', bg: 'from-emerald-500/8 to-emerald-500/3' },
-  unknown: { label: 'Unknown', emoji: '❓', accent: 'text-gray-600', bg: 'from-gray-500/8 to-gray-500/3' },
-}
+const CATEGORY_CONFIG: Record<string, { label: string; emoji: string; accent: string; bg: string }> = Object.fromEntries(
+  Object.entries(SHARED_CONFIG).map(([key, cfg]) => [
+    key,
+    {
+      label: cfg.label,
+      emoji: cfg.emoji,
+      accent: CATEGORY_COLORS[key]?.text ?? 'text-gray-600',
+      bg: CATEGORY_COLORS[key]?.gradient ?? 'from-gray-500/8 to-gray-500/3',
+    },
+  ])
+)
 
 const ACTION_LABELS: Record<string, { label: string; color: string }> = {
   archive: { label: 'Archive', color: 'bg-blue-500/10 text-blue-700 border border-blue-500/20' },
@@ -22,9 +24,7 @@ const ACTION_LABELS: Record<string, { label: string; color: string }> = {
   keep: { label: 'Keep', color: 'bg-emerald-500/10 text-emerald-700 border border-emerald-500/20' },
 }
 
-const ACTION_OPTIONS = ['archive', 'move_to_trash', 'mark_read', 'keep'] as const
-
-const PROTECTED = new Set(['personal', 'important'])
+const PROTECTED = PROTECTED_CATEGORIES as Set<string>
 
 interface ScanAction {
   id: string
@@ -78,7 +78,7 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
   const [result, setResult] = useState<{ executed: number; failed: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [categoryFilter, setCategoryFilter] = useState<string | null>(initialCategory ?? null)
-  const [actionOverrides, setActionOverrides] = useState<Map<string, string>>(new Map())
+  const [showConfirmModal, setShowConfirmModal] = useState(false)
   const filteredCategoryRef = useRef<HTMLDivElement>(null)
 
   // Collapse all categories except the filtered one on initial load
@@ -170,8 +170,6 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
   }
 
   function getEffectiveAction(action: ScanAction): string {
-    const override = actionOverrides.get(action.category)
-    if (override) return override
     // Fallback unsubscribe to archive since unsubscribe is not implemented
     if (action.action_type === 'unsubscribe') return 'archive'
     return action.action_type
@@ -234,7 +232,6 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
 
       setResult({ executed: totalExecuted, failed: totalFailed })
       setSelected(new Set())
-      setActionOverrides(new Map())
       setProgress(null)
       router.refresh()
     } catch (err) {
@@ -281,39 +278,6 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
     setExecuting(false)
   }
 
-  function downloadJSON() {
-    const data = {
-      scan: {
-        id: scan.id,
-        status: scan.status,
-        totalEmailsScanned: scan.total_emails_scanned,
-        categoryCounts: scan.category_counts,
-        resolvedByCache: scan.resolved_by_cache,
-        resolvedByLlm: scan.resolved_by_llm,
-        createdAt: scan.created_at,
-      },
-      actions: actions.map((a) => ({
-        sender: a.sender_address,
-        senderName: a.sender_name,
-        subject: a.subject_preview,
-        date: a.email_date,
-        category: a.category,
-        confidence: a.confidence,
-        actionType: a.action_type,
-        reasoning: a.reasoning,
-        categorizedBy: a.categorized_by,
-        status: a.status,
-      })),
-    }
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `scan-${scan.id}-${Date.now()}.json`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
-
   return (
     <div className="mt-2 animate-fade-in-up">
       {/* Header */}
@@ -321,24 +285,8 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-[#0f0f23]">Scan Results</h1>
           <p className="mt-1 text-sm text-[#9898b0]">
-            {scan.total_emails_scanned.toLocaleString()} emails scanned · {actions.length} actions loaded · {formatDate(scan.created_at)}
+            {scan.total_emails_scanned.toLocaleString()} emails scanned · {formatDate(scan.created_at)}
           </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={downloadJSON}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-black/[0.06] bg-white/60 px-3 py-1.5 text-xs font-medium text-[#64648a] backdrop-blur-sm transition-all hover:border-indigo-500/20 hover:text-[#0f0f23]"
-          >
-            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
-            </svg>
-            Download JSON
-          </button>
-          <div className="flex items-center gap-2 font-mono text-[11px] tracking-wider text-[#9898b0] uppercase">
-            <span>Cache: {scan.resolved_by_cache}</span>
-            <span className="text-black/10">|</span>
-            <span>AI: {scan.resolved_by_llm}</span>
-          </div>
         </div>
       </div>
 
@@ -449,9 +397,8 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
           const allSelected = categoryActions.every((a) => selected.has(a.id))
           const someSelected = categoryActions.some((a) => selected.has(a.id))
           const collapsed = collapsedCategories.has(category)
-          const overriddenAction = actionOverrides.get(category)
           const defaultAction = categoryActions[0]?.action_type === 'unsubscribe' ? 'archive' : (categoryActions[0]?.action_type || 'keep')
-          const currentAction = overriddenAction ?? defaultAction
+          const currentAction = defaultAction
           const actionConfig = ACTION_LABELS[currentAction] ?? ACTION_LABELS.keep
 
           return (
@@ -479,6 +426,7 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
                       }}
                       onClick={(e) => e.stopPropagation()}
                       className="h-4 w-4 rounded border-black/10 accent-indigo-500"
+                      aria-label={`Select all ${config.label} emails`}
                     />
                   )}
                   <span className="text-xl">{config.emoji}</span>
@@ -491,25 +439,9 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
                   {isProtected ? (
                     <span className="font-mono text-[10px] tracking-wider text-[#9898b0] uppercase">Protected</span>
                   ) : (
-                    <select
-                      value={currentAction}
-                      onChange={(e) => {
-                        e.stopPropagation()
-                        setActionOverrides((prev) => {
-                          const next = new Map(prev)
-                          next.set(category, e.target.value)
-                          return next
-                        })
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                      className={`cursor-pointer appearance-none rounded-full px-3 py-0.5 text-[11px] font-medium outline-none transition-all ${actionConfig.color}`}
-                    >
-                      {ACTION_OPTIONS.map((opt) => (
-                        <option key={opt} value={opt}>
-                          {ACTION_LABELS[opt].label}
-                        </option>
-                      ))}
-                    </select>
+                    <span className={`rounded-full px-3 py-0.5 text-[11px] font-medium ${actionConfig.color}`}>
+                      {actionConfig.label}
+                    </span>
                   )}
                   <svg
                     className={`h-4 w-4 text-[#9898b0] transition-transform duration-200 ${collapsed ? '' : 'rotate-180'}`}
@@ -539,6 +471,7 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
                           checked={selected.has(action.id)}
                           onChange={() => toggleAction(action.id)}
                           className="h-4 w-4 shrink-0 rounded border-black/10 accent-indigo-500"
+                          aria-label={`Select email from ${action.sender_name || action.sender_address}`}
                         />
                       )}
                       <div className="min-w-0 flex-1">
@@ -547,7 +480,7 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
                             {action.sender_name || action.sender_address}
                           </span>
                           {action.sender_name && (
-                            <span className="hidden truncate text-xs text-[#c0c0ce] sm:inline">
+                            <span className="hidden truncate text-xs text-[#b0b0c0] sm:inline">
                               {action.sender_address}
                             </span>
                           )}
@@ -557,11 +490,14 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
                         </p>
                       </div>
                       <div className="flex shrink-0 items-center gap-3">
-                        <span className={`font-mono text-xs ${action.confidence >= 0.9 ? 'text-emerald-500' : action.confidence >= 0.7 ? 'text-amber-500' : 'text-red-400'}`}>
+                        <span
+                          className={`font-mono text-xs ${action.confidence >= 0.9 ? 'text-emerald-500' : action.confidence >= 0.7 ? 'text-amber-500' : 'text-red-400'}`}
+                          title={action.confidence >= 0.9 ? 'High confidence' : action.confidence >= 0.7 ? 'Review suggested' : 'Low confidence'}
+                        >
                           {Math.round(action.confidence * 100)}%
                         </span>
                         {action.email_date && (
-                          <span className="hidden text-xs text-[#c0c0ce] sm:inline">
+                          <span className="hidden text-xs text-[#b0b0c0] sm:inline">
                             {new Date(action.email_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                           </span>
                         )}
@@ -600,12 +536,12 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
                         {action.sender_name || action.sender_address}
                       </span>
                       {action.sender_name && (
-                        <span className="hidden truncate text-xs text-[#c0c0ce] sm:inline">
+                        <span className="hidden truncate text-xs text-[#b0b0c0] sm:inline">
                           {action.sender_address}
                         </span>
                       )}
                     </div>
-                    <p className="truncate text-sm text-[#c0c0ce]">
+                    <p className="truncate text-sm text-[#b0b0c0]">
                       {action.subject_preview || '(no subject)'}
                     </p>
                   </div>
@@ -615,7 +551,7 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
                 </div>
               ))}
               {filteredNonPending.length > 10 && (
-                <div className="px-5 py-3 text-center text-xs text-[#c0c0ce]">
+                <div className="px-5 py-3 text-center text-xs text-[#b0b0c0]">
                   +{filteredNonPending.length - 10} more
                 </div>
               )}
@@ -640,7 +576,11 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
                     {progress.failed > 0 && <span className="text-red-500 ml-2">{progress.failed} failed</span>}
                   </span>
                 </div>
-                <div className="h-2 w-full overflow-hidden rounded-full bg-black/[0.04]">
+                <div
+                  className="h-2 w-full overflow-hidden rounded-full bg-black/[0.04]"
+                  role="progressbar"
+                  aria-valuenow={Math.round((progress.done / progress.total) * 100)}
+                >
                   <div
                     className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-300 ease-out"
                     style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }}
@@ -672,7 +612,7 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
                   </button>
                 )}
                 <button
-                  onClick={executeSelected}
+                  onClick={() => setShowConfirmModal(true)}
                   disabled={visibleSelectedCount === 0 || executing}
                   className="glow-button inline-flex items-center gap-2 rounded-xl px-6 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
                 >
@@ -686,6 +626,39 @@ export function ScanResults({ scan, actions, initialCategory }: { scan: Scan; ac
           </div>
         </div>
       )}
+
+      <ConfirmationModal
+        isOpen={showConfirmModal}
+        onClose={() => setShowConfirmModal(false)}
+        onConfirm={() => {
+          setShowConfirmModal(false)
+          executeSelected()
+        }}
+        title={`Execute ${visibleSelectedCount} Actions`}
+        description="The following actions will be applied to your emails. This cannot be undone."
+        actions={(() => {
+          const breakdown = new Map<string, number>()
+          const visibleIds = new Set(visiblePending.map((a) => a.id))
+          for (const action of actions) {
+            if (selected.has(action.id) && visibleIds.has(action.id)) {
+              const effective = getEffectiveAction(action)
+              breakdown.set(effective, (breakdown.get(effective) || 0) + 1)
+            }
+          }
+          const ACTION_DISPLAY: Record<string, string> = { archive: 'Archive', move_to_trash: 'Move to Trash', mark_read: 'Mark as Read', keep: 'Keep' }
+          return [...breakdown.entries()].map(([action, count]) => ({
+            label: ACTION_DISPLAY[action] || action,
+            count,
+            variant: action === 'move_to_trash' ? 'destructive' as const : 'default' as const,
+          }))
+        })()}
+        confirmText={`Execute ${visibleSelectedCount} Actions`}
+        variant={(() => {
+          const visibleIds = new Set(visiblePending.map((a) => a.id))
+          const hasTrash = actions.some((a) => selected.has(a.id) && visibleIds.has(a.id) && getEffectiveAction(a) === 'move_to_trash')
+          return hasTrash ? 'destructive' : 'default'
+        })()}
+      />
     </div>
   )
 }

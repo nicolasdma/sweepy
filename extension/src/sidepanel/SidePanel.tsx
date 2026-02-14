@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { MessageBus } from '@/lib/message-bus'
 import { authManager } from '@/lib/auth'
+import { CONFIG } from '@/lib/config'
 import type {
   ScanStatus,
   ScanStats,
@@ -8,68 +9,21 @@ import type {
 } from '@shared/types/messages'
 import { isExtensionMessage } from '@shared/types/messages'
 import type { ClassifiedEmail, EmailCategory, CategorizationSource } from '@shared/types/categories'
+import { CATEGORY_CONFIG as SHARED_CATEGORY_CONFIG, CATEGORY_ORDER, CLEANUP_CATEGORIES, CATEGORY_EXT_COLORS, PROTECTED_CATEGORIES } from '@shared/config/categories'
 
 // ---------- Category config ----------
 
-const CATEGORY_CONFIG: Record<
-  EmailCategory,
-  { emoji: string; label: string; colorClasses: string; badgeBg: string }
-> = {
-  spam: {
-    emoji: '\u{1F6AB}',
-    label: 'Spam',
-    colorClasses: 'text-red-700 bg-red-50 border-red-200',
-    badgeBg: 'bg-red-100 text-red-700',
-  },
-  marketing: {
-    emoji: '\u{1F4E2}',
-    label: 'Marketing',
-    colorClasses: 'text-yellow-700 bg-yellow-50 border-yellow-200',
-    badgeBg: 'bg-yellow-100 text-yellow-700',
-  },
-  newsletter: {
-    emoji: '\u{1F4F0}',
-    label: 'Newsletter',
-    colorClasses: 'text-yellow-700 bg-yellow-50 border-yellow-200',
-    badgeBg: 'bg-yellow-100 text-yellow-700',
-  },
-  personal: {
-    emoji: '\u{1F4AC}',
-    label: 'Personal',
-    colorClasses: 'text-green-700 bg-green-50 border-green-200',
-    badgeBg: 'bg-green-100 text-green-700',
-  },
-  important: {
-    emoji: '\u{2B50}',
-    label: 'Important',
-    colorClasses: 'text-green-700 bg-green-50 border-green-200',
-    badgeBg: 'bg-green-100 text-green-700',
-  },
-  transactional: {
-    emoji: '\u{1F9FE}',
-    label: 'Transactional',
-    colorClasses: 'text-gray-700 bg-gray-50 border-gray-200',
-    badgeBg: 'bg-gray-100 text-gray-700',
-  },
-  social: {
-    emoji: '\u{1F465}',
-    label: 'Social',
-    colorClasses: 'text-gray-700 bg-gray-50 border-gray-200',
-    badgeBg: 'bg-gray-100 text-gray-700',
-  },
-  notification: {
-    emoji: '\u{1F514}',
-    label: 'Notification',
-    colorClasses: 'text-gray-700 bg-gray-50 border-gray-200',
-    badgeBg: 'bg-gray-100 text-gray-700',
-  },
-  unknown: {
-    emoji: '\u{2753}',
-    label: 'Unknown',
-    colorClasses: 'text-gray-700 bg-gray-50 border-gray-200',
-    badgeBg: 'bg-gray-100 text-gray-700',
-  },
-}
+const CATEGORY_CONFIG: Record<string, { emoji: string; label: string; colorClasses: string; badgeBg: string }> = Object.fromEntries(
+  Object.entries(SHARED_CATEGORY_CONFIG).map(([key, cfg]) => [
+    key,
+    {
+      emoji: cfg.emoji,
+      label: cfg.label,
+      colorClasses: CATEGORY_EXT_COLORS[key]?.colorClasses ?? 'text-gray-700 bg-gray-50 border-gray-200',
+      badgeBg: CATEGORY_EXT_COLORS[key]?.badgeBg ?? 'bg-gray-100 text-gray-700',
+    },
+  ])
+)
 
 // ---------- Helpers ----------
 
@@ -97,29 +51,9 @@ function countByResolution(emails: ClassifiedEmail[]) {
   return counts
 }
 
-const CLEANUP_CATEGORIES: EmailCategory[] = [
-  'spam',
-  'marketing',
-  'newsletter',
-  'notification',
-]
-
 function getCleanupCount(emails: ClassifiedEmail[]) {
   return emails.filter((e) => CLEANUP_CATEGORIES.includes(e.category)).length
 }
-
-// Category display order (most actionable first)
-const CATEGORY_ORDER: EmailCategory[] = [
-  'spam',
-  'marketing',
-  'newsletter',
-  'notification',
-  'social',
-  'transactional',
-  'personal',
-  'important',
-  'unknown',
-]
 
 // ---------- Sub-components ----------
 
@@ -144,7 +78,7 @@ function SummaryStats({ emails, stats }: { emails: ClassifiedEmail[]; stats: Sca
             <span>Heuristic: {resolution.resolvedByHeuristic}</span>
           )}
           {resolution.resolvedByCache > 0 && <span>Cache: {resolution.resolvedByCache}</span>}
-          {resolution.resolvedByLlm > 0 && <span>LLM: {resolution.resolvedByLlm}</span>}
+          {resolution.resolvedByLlm > 0 && <span>AI: {resolution.resolvedByLlm}</span>}
         </div>
       </div>
 
@@ -179,6 +113,7 @@ function CategorySection({
       {/* Header */}
       <button
         onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
         className="flex w-full items-center justify-between px-3 py-2 text-left"
       >
         <div className="flex items-center gap-2">
@@ -234,6 +169,47 @@ function CategorySection({
   )
 }
 
+// ---------- Error Boundary ----------
+
+class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error('[Sweepy:SidePanel] React error boundary caught:', error, info)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-white p-4">
+          <h1 className="text-lg font-bold text-gray-900">Sweepy</h1>
+          <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-4">
+            <p className="text-sm text-red-700">Something went wrong.</p>
+            <p className="mt-1 text-xs text-red-500">{this.state.error?.message}</p>
+            <button
+              onClick={() => this.setState({ hasError: false, error: null })}
+              className="mt-2 text-sm text-red-600 underline"
+            >
+              Try again
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 // ---------- Main component ----------
 
 export function SidePanel() {
@@ -245,6 +221,23 @@ export function SidePanel() {
   const [stats, setStats] = useState<ScanStats | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const messageBusRef = useRef<MessageBus | null>(null)
+
+  // Load previous results from local storage on mount
+  useEffect(() => {
+    if (status === 'idle' && results.length === 0) {
+      chrome.storage.local.get(CONFIG.STORAGE_KEYS.LAST_SCAN_RESULTS).then((stored) => {
+        const data = stored[CONFIG.STORAGE_KEYS.LAST_SCAN_RESULTS]
+        if (data?.results?.length > 0) {
+          console.log('[Sweepy:SidePanel] Loaded previous results from local storage:', data.results.length)
+          setResults(data.results)
+          setStats(data.stats ?? null)
+          setStatus('complete')
+        }
+      }).catch(() => {
+        // Local storage access may fail — ignore
+      })
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Check auth state on mount
   useEffect(() => {
@@ -409,7 +402,7 @@ export function SidePanel() {
     }
   }, [])
 
-  const grouped = groupByCategory(results)
+  const grouped = useMemo(() => groupByCategory(results), [results])
 
   // Auth loading state
   if (isAuthenticated === null) {
@@ -434,7 +427,7 @@ export function SidePanel() {
             </svg>
           </div>
           <p className="mb-2 text-sm font-medium text-gray-900">
-            Connect your Gmail account
+            Sign in to Sweepy
           </p>
           <p className="mb-6 text-xs text-gray-500">
             Sign in with Google to scan and categorize your inbox with AI.
@@ -457,9 +450,6 @@ export function SidePanel() {
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <h1 className="text-lg font-bold text-gray-900">Sweepy</h1>
-          <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs text-blue-700">
-            Phase 1
-          </span>
         </div>
         <button
           onClick={handleLogout}
@@ -480,7 +470,7 @@ export function SidePanel() {
             onClick={handleScan}
             className="w-full rounded-lg bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-700"
           >
-            Scan Inbox
+            Scan My Inbox
           </button>
           <p className="mt-2 text-xs text-gray-400">
             Last 30 days, up to 1,000 emails
@@ -501,11 +491,12 @@ export function SidePanel() {
                 : 'Starting...'}
             </span>
           </div>
-          <div className="h-2 rounded-full bg-gray-200">
+          <div className="h-2 rounded-full bg-gray-200" role="progressbar">
             <div
               className={`h-2 rounded-full transition-all ${
                 phase === 'analyzing' ? 'bg-purple-600' : 'bg-blue-600'
               }`}
+              aria-valuenow={progress.total > 0 ? Math.round((progress.processed / progress.total) * 100) : 0}
               style={{
                 width:
                   progress.total > 0
@@ -590,5 +581,13 @@ export function SidePanel() {
         </div>
       )}
     </div>
+  )
+}
+
+export function SidePanelWithErrorBoundary() {
+  return (
+    <ErrorBoundary>
+      <SidePanel />
+    </ErrorBoundary>
   )
 }

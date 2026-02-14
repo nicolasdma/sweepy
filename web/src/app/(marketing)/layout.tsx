@@ -40,7 +40,7 @@ export default async function MarketingLayout({
                   href="/login"
                   className="text-sm text-[#64648a] transition-colors hover:text-[#0f0f23]"
                 >
-                  Log in
+                  Sign in
                 </a>
                 <a
                   href="/login"

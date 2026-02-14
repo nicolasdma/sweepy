@@ -78,7 +78,7 @@ export default function HomePage() {
         </div>
 
         {/* Footer links */}
-        <div className="mt-4 flex items-center justify-center gap-4 text-[11px] text-[#c0c0ce]">
+        <div className="mt-4 flex items-center justify-center gap-4 text-[11px] text-[#b0b0c0]">
           <a href="/privacy" className="transition-colors hover:text-[#9898b0]">
             Privacy
           </a>
