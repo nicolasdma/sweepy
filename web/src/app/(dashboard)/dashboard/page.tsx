@@ -30,7 +30,7 @@ export default async function DashboardPage({
     data: { user },
   } = await supabase.auth.getUser()
 
-  const [profileResult, scansResult, pendingActionsResult] = await Promise.all([
+  const [profileResult, scansResult, pendingActionsResult, usageResult] = await Promise.all([
     supabase
       .from('profiles')
       .select('gmail_connected')
@@ -44,12 +44,20 @@ export default async function DashboardPage({
       .from('suggested_actions')
       .select('id', { count: 'exact', head: true })
       .eq('status', 'pending'),
+    supabase
+      .from('usage_tracking')
+      .select('scans_count, emails_processed, llm_calls_count, llm_input_tokens, llm_output_tokens, llm_cost_usd')
+      .eq('user_id', user!.id)
+      .order('period_start', { ascending: false })
+      .limit(1)
+      .single(),
   ])
 
   const profile = profileResult.data
   const gmailConnected = profile?.gmail_connected ?? false
   const scans = scansResult.data ?? []
   const pendingCount = pendingActionsResult.count ?? 0
+  const usage = usageResult.data
 
   const latestCompleted = scans.find((s) => s.status === 'completed')
   const scanCategoryCounts: Record<string, number> = latestCompleted?.category_counts ?? {}
@@ -329,6 +337,39 @@ export default async function DashboardPage({
           {!hasCategories && (
             <div className="mt-8 animate-fade-in-up-d2">
               <ScanButton />
+            </div>
+          )}
+
+          {/* Usage stats — debug card */}
+          {usage && (
+            <div className="mt-8 animate-fade-in-up-d2">
+              <div className="glass-card rounded-xl p-5">
+                <p className="font-mono text-[11px] tracking-wider text-[#9898b0] uppercase">Usage this month</p>
+                <div className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-4">
+                  <div>
+                    <p className="text-lg font-bold text-[#0f0f23]">{usage.scans_count ?? 0}</p>
+                    <p className="text-[11px] text-[#9898b0]">scans</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold text-[#0f0f23]">{formatNumber(usage.emails_processed ?? 0)}</p>
+                    <p className="text-[11px] text-[#9898b0]">emails processed</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold text-[#0f0f23]">
+                      {formatNumber((usage.llm_input_tokens ?? 0) + (usage.llm_output_tokens ?? 0))}
+                    </p>
+                    <p className="text-[11px] text-[#9898b0]">
+                      tokens ({formatNumber(usage.llm_input_tokens ?? 0)} in / {formatNumber(usage.llm_output_tokens ?? 0)} out)
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold text-[#0f0f23]">
+                      ${Number(usage.llm_cost_usd ?? 0).toFixed(4)}
+                    </p>
+                    <p className="text-[11px] text-[#9898b0]">LLM cost</p>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </>

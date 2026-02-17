@@ -52,7 +52,7 @@ export async function POST(
   // Load scan record
   const { data: scan, error: scanError } = await supabase
     .from('email_scans')
-    .select('id, user_id, gmail_message_ids, processed_count, total_ids, scan_phase, category_counts, resolved_by_heuristic, resolved_by_cache, resolved_by_llm, llm_cost_usd')
+    .select('id, user_id, gmail_message_ids, processed_count, total_ids, scan_phase, category_counts, resolved_by_heuristic, resolved_by_cache, resolved_by_llm, llm_cost_usd, llm_input_tokens, llm_output_tokens')
     .eq('id', scanId)
     .eq('user_id', auth.userId)
     .single()
@@ -171,6 +171,8 @@ export async function POST(
         resolved_by_cache: (scan.resolved_by_cache || 0) + stats.resolvedByCache,
         resolved_by_llm: (scan.resolved_by_llm || 0) + stats.resolvedByLlm,
         llm_cost_usd: (scan.llm_cost_usd || 0) + stats.llmCostUsd,
+        llm_input_tokens: (scan.llm_input_tokens || 0) + stats.llmInputTokens,
+        llm_output_tokens: (scan.llm_output_tokens || 0) + stats.llmOutputTokens,
         ...(isLastBatch
           ? {
               scan_phase: 'completed',
@@ -181,9 +183,19 @@ export async function POST(
       })
       .eq('id', scanId)
 
-    // Update usage tracking on last batch
+    // Update usage tracking on last batch (with accumulated token counts)
     if (isLastBatch) {
-      await updateUsageTracking(supabase, auth.userId, scan.total_ids, (scan.resolved_by_llm || 0) + stats.resolvedByLlm)
+      const totalLlm = (scan.resolved_by_llm || 0) + stats.resolvedByLlm
+      const totalCost = (scan.llm_cost_usd || 0) + stats.llmCostUsd
+      const totalInputTokens = (scan.llm_input_tokens || 0) + stats.llmInputTokens
+      const totalOutputTokens = (scan.llm_output_tokens || 0) + stats.llmOutputTokens
+      await updateUsageTracking(supabase, auth.userId, {
+        emailsProcessed: scan.total_ids,
+        llmResolved: totalLlm,
+        llmInputTokens: totalInputTokens,
+        llmOutputTokens: totalOutputTokens,
+        llmCostUsd: totalCost,
+      })
     }
 
     const phase = isLastBatch ? 'completed' : 'processing'
@@ -222,29 +234,65 @@ async function finalizeScan(supabase: any, scanId: string, userId: string, scan:
     })
     .eq('id', scanId)
 
-  await updateUsageTracking(supabase, userId, scan.total_ids, scan.resolved_by_llm || 0)
+  await updateUsageTracking(supabase, userId, {
+    emailsProcessed: scan.total_ids,
+    llmResolved: scan.resolved_by_llm || 0,
+    llmInputTokens: 0,
+    llmOutputTokens: 0,
+    llmCostUsd: scan.llm_cost_usd || 0,
+  })
   console.log(`[Sweepy:Process] Scan ${scanId} — finalized (all batches done)`)
 }
 
+interface UsageData {
+  emailsProcessed: number
+  llmResolved: number
+  llmInputTokens: number
+  llmOutputTokens: number
+  llmCostUsd: number
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function updateUsageTracking(supabase: any, userId: string, emailsProcessed: number, llmResolved: number) {
+async function updateUsageTracking(supabase: any, userId: string, data: UsageData) {
   const now = new Date()
   const periodStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
   const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString()
 
   try {
-    await supabase.from('usage_tracking').upsert(
-      {
+    // Read existing record to accumulate
+    const { data: existing } = await supabase
+      .from('usage_tracking')
+      .select('id, scans_count, emails_processed, llm_calls_count, llm_input_tokens, llm_output_tokens, llm_cost_usd')
+      .eq('user_id', userId)
+      .eq('period_start', periodStart)
+      .single()
+
+    if (existing) {
+      await supabase
+        .from('usage_tracking')
+        .update({
+          scans_count: (existing.scans_count || 0) + 1,
+          emails_processed: (existing.emails_processed || 0) + data.emailsProcessed,
+          llm_calls_count: (existing.llm_calls_count || 0) + (data.llmResolved > 0 ? Math.ceil(data.llmResolved / 20) : 0),
+          llm_input_tokens: (existing.llm_input_tokens || 0) + data.llmInputTokens,
+          llm_output_tokens: (existing.llm_output_tokens || 0) + data.llmOutputTokens,
+          llm_cost_usd: (existing.llm_cost_usd || 0) + data.llmCostUsd,
+        })
+        .eq('id', existing.id)
+    } else {
+      await supabase.from('usage_tracking').insert({
         user_id: userId,
         period_start: periodStart,
         period_end: periodEnd,
         scans_count: 1,
-        emails_processed: emailsProcessed,
-        llm_calls_count: llmResolved > 0 ? Math.ceil(llmResolved / 20) : 0,
+        emails_processed: data.emailsProcessed,
+        llm_calls_count: data.llmResolved > 0 ? Math.ceil(data.llmResolved / 20) : 0,
         llm_tokens_used: 0,
-      },
-      { onConflict: 'user_id,period_start' }
-    )
+        llm_input_tokens: data.llmInputTokens,
+        llm_output_tokens: data.llmOutputTokens,
+        llm_cost_usd: data.llmCostUsd,
+      })
+    }
   } catch {
     console.warn('[Sweepy:Process] Failed to update usage tracking (non-fatal)')
   }
