@@ -30,7 +30,7 @@ export default async function DashboardPage({
     data: { user },
   } = await supabase.auth.getUser()
 
-  const [profileResult, scansResult, pendingActionsResult, usageResult] = await Promise.all([
+  const [profileResult, scansResult, usageResult] = await Promise.all([
     supabase
       .from('profiles')
       .select('gmail_connected')
@@ -40,10 +40,6 @@ export default async function DashboardPage({
       .from('email_scans')
       .select('id, total_emails_scanned, status, category_counts, created_at, completed_at, resolved_by_heuristic, resolved_by_cache, resolved_by_llm')
       .order('created_at', { ascending: false }),
-    supabase
-      .from('suggested_actions')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'pending'),
     supabase
       .from('usage_tracking')
       .select('scans_count, emails_processed, llm_calls_count, llm_input_tokens, llm_output_tokens, llm_cost_usd')
@@ -56,11 +52,9 @@ export default async function DashboardPage({
   const profile = profileResult.data
   const gmailConnected = profile?.gmail_connected ?? false
   const scans = scansResult.data ?? []
-  const pendingCount = pendingActionsResult.count ?? 0
   const usage = usageResult.data
 
   const latestCompleted = scans.find((s) => s.status === 'completed')
-  const scanCategoryCounts: Record<string, number> = latestCompleted?.category_counts ?? {}
 
   // Compute scan age and expiration
   const EXPIRY_DAYS = 7
@@ -70,23 +64,25 @@ export default async function DashboardPage({
   const daysRemaining = Math.max(0, EXPIRY_DAYS - scanAgeDays)
   const showExpiry = latestCompleted && scanAgeDays >= 3
 
-  // Fetch LIVE pending counts per category — single query, aggregate in memory
+  // Single source of truth: ALL actions from latest scan, grouped by category + status
+  const totalByCategory: Record<string, number> = {}
   const pendingByCategory: Record<string, number> = {}
   if (latestCompleted) {
     const { data } = await supabase
       .from('suggested_actions')
-      .select('category')
+      .select('category, status')
       .eq('scan_id', latestCompleted.id)
-      .eq('status', 'pending')
     if (data) {
       for (const row of data) {
-        pendingByCategory[row.category] = (pendingByCategory[row.category] || 0) + 1
+        totalByCategory[row.category] = (totalByCategory[row.category] || 0) + 1
+        if (row.status === 'pending') {
+          pendingByCategory[row.category] = (pendingByCategory[row.category] || 0) + 1
+        }
       }
     }
   }
 
-  // Merge: show all categories from scan, with live pending counts
-  const allCategories = Object.keys(scanCategoryCounts)
+  const allCategories = Object.keys(totalByCategory)
   const totalPendingInScan = Object.values(pendingByCategory).reduce((a, b) => a + b, 0)
   const hasCategories = allCategories.length > 0
 
@@ -164,8 +160,8 @@ export default async function DashboardPage({
             <div className="glass-card rounded-xl p-5">
               <p className="font-mono text-[11px] tracking-wider text-[#9898b0] uppercase">Pending Actions</p>
               <p className="mt-2 text-2xl font-bold text-[#0f0f23]">
-                {pendingCount > 0 ? (
-                  <span className="gradient-text">{formatNumber(pendingCount)}</span>
+                {totalPendingInScan > 0 ? (
+                  <span className="gradient-text">{formatNumber(totalPendingInScan)}</span>
                 ) : (
                   '0'
                 )}
@@ -272,11 +268,11 @@ export default async function DashboardPage({
                 {/* 3 super-group cards */}
                 <div className="mt-6 grid gap-4 sm:grid-cols-3">
                   {CATEGORY_GROUPS.map((group) => {
-                    const groupScanned = group.categories.reduce((sum, cat) => sum + (scanCategoryCounts[cat] ?? 0), 0)
+                    const groupTotal = group.categories.reduce((sum, cat) => sum + (totalByCategory[cat] ?? 0), 0)
                     const groupPending = group.categories.reduce((sum, cat) => sum + (pendingByCategory[cat] ?? 0), 0)
-                    if (groupScanned === 0) return null
+                    if (groupTotal === 0) return null
                     const isDone = groupPending === 0
-                    const progressPct = groupScanned > 0 ? ((groupScanned - groupPending) / groupScanned) * 100 : 0
+                    const actedPct = groupTotal > 0 ? ((groupTotal - groupPending) / groupTotal) * 100 : 0
                     return (
                       <Link
                         key={group.key}
@@ -314,13 +310,15 @@ export default async function DashboardPage({
                         {/* Mini progress bar */}
                         <div className="mt-3">
                           <div className="flex items-center justify-between mb-1">
-                            <span className="text-[10px] text-[#9898b0]">{groupScanned - groupPending} of {groupScanned} processed</span>
-                            <span className="text-[10px] font-medium text-[#9898b0]">{Math.round(progressPct)}%</span>
+                            <span className="text-[10px] text-[#9898b0]">
+                              {isDone ? 'All done' : `${formatNumber(groupPending)} of ${formatNumber(groupTotal)} pending`}
+                            </span>
+                            <span className="text-[10px] font-medium text-[#9898b0]">{Math.round(actedPct)}%</span>
                           </div>
                           <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/[0.04]">
                             <div
                               className={`h-full rounded-full ${isDone ? 'bg-emerald-400' : group.bar} transition-all duration-700`}
-                              style={{ width: `${progressPct}%` }}
+                              style={{ width: `${actedPct}%` }}
                             />
                           </div>
                         </div>
