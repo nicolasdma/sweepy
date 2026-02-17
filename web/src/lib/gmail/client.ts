@@ -82,13 +82,14 @@ export async function listMessageIds(
   onProgress?: (fetched: number) => void
 ): Promise<string[]> {
   const ids: string[] = []
+  const seenThreads = new Set<string>()
   let pageToken: string | undefined
 
   while (ids.length < maxResults) {
-    const batchSize = Math.min(100, maxResults - ids.length) // Gmail max per page = 100
+    // Always fetch full pages (100) since dedup may skip many messages
     const params = new URLSearchParams({
       q: query,
-      maxResults: String(batchSize),
+      maxResults: '100',
     })
     if (pageToken) params.set('pageToken', pageToken)
 
@@ -97,7 +98,13 @@ export async function listMessageIds(
 
     if (data.messages) {
       for (const msg of data.messages) {
-        ids.push(msg.id)
+        // Deduplicate by thread: keep only the newest message per thread
+        // (Gmail returns newest first, so first seen = latest)
+        if (!seenThreads.has(msg.threadId)) {
+          seenThreads.add(msg.threadId)
+          ids.push(msg.id)
+          if (ids.length >= maxResults) break
+        }
       }
     }
 
