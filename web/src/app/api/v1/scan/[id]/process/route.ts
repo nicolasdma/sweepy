@@ -10,7 +10,7 @@ import { getSuggestedActions } from '@/lib/ai/suggested-actions'
 // Each batch should complete well within 60s
 export const maxDuration = 60
 
-const BATCH_SIZE = 100
+const BATCH_SIZE = 30
 
 const ProcessRequestSchema = z.object({
   offset: z.number().int().min(0).default(0),
