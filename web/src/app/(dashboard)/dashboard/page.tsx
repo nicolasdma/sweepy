@@ -68,17 +68,23 @@ export default async function DashboardPage({
   const totalByCategory: Record<string, number> = {}
   const pendingByCategory: Record<string, number> = {}
   if (latestCompleted) {
-    const { data } = await supabase
-      .from('suggested_actions')
-      .select('category, status')
-      .eq('scan_id', latestCompleted.id)
-    if (data) {
-      for (const row of data) {
+    const PAGE_SIZE = 1000
+    let offset = 0
+    while (true) {
+      const { data: page } = await supabase
+        .from('suggested_actions')
+        .select('category, status')
+        .eq('scan_id', latestCompleted.id)
+        .range(offset, offset + PAGE_SIZE - 1)
+      if (!page || page.length === 0) break
+      for (const row of page) {
         totalByCategory[row.category] = (totalByCategory[row.category] || 0) + 1
         if (row.status === 'pending') {
           pendingByCategory[row.category] = (pendingByCategory[row.category] || 0) + 1
         }
       }
+      if (page.length < PAGE_SIZE) break
+      offset += PAGE_SIZE
     }
   }
 
