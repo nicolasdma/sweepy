@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { z } from 'zod'
 import { withAuth } from '@/lib/api-auth'
 import { createServiceRoleClient } from '@/lib/supabase/server'
@@ -7,6 +7,9 @@ import { listMessageIds, batchGetMessages } from '@/lib/gmail/client'
 import { extractMinimalEmailData } from '@/lib/gmail/extractor'
 import { categorizeEmails } from '@/lib/ai'
 import { getSuggestedActions } from '@/lib/ai/suggested-actions'
+
+// Vercel Hobby max: 60s. Pro: 300s. after() inherits this limit.
+export const maxDuration = 60
 
 const ScanRequestSchema = z.object({
   maxEmails: z.number().min(1).max(5000).default(500),
@@ -85,8 +88,8 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  // Run the scan in background (don't await)
-  runScanInBackground(scan.id, auth.userId, maxEmails, query, skipCache)
+  // Run the scan after the response is sent (Vercel-safe)
+  after(runScanInBackground(scan.id, auth.userId, maxEmails, query, skipCache))
 
   // Return immediately with the scan ID
   return NextResponse.json({ scanId: scan.id, status: 'running' })
