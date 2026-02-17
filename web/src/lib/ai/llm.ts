@@ -153,10 +153,23 @@ function formatEmailForLLM(email: MinimalEmailData): string {
   ].filter(Boolean).join('\n')
 }
 
+export interface LLMUsage {
+  inputTokens: number
+  outputTokens: number
+  costUsd: number
+  provider: string
+}
+
+// Last usage from the most recent classifyWithLLM call
+let _lastUsage: LLMUsage | null = null
+export function getLastLLMUsage(): LLMUsage | null {
+  return _lastUsage
+}
+
 /**
  * Classify a batch of emails using LLM.
- * Primary: GPT-5 mini. Fallback: Claude Haiku 4.5.
- * Includes circuit breaker, retry, and JSON repair.
+ * Primary: Claude Haiku 4.5. Fallback: GPT-5 mini.
+ * Includes circuit breaker, retry, JSON repair, and real token tracking.
  */
 export async function classifyWithLLM(
   emails: MinimalEmailData[]
@@ -168,9 +181,10 @@ export async function classifyWithLLM(
   const primaryOpen = Date.now() >= circuitState.primary.openUntil
   if (primaryOpen) {
     try {
-      const response = await callProviderWithRetry(primaryProvider, userPrompt)
+      const { parsed, usage } = await callProviderWithRetry(primaryProvider, userPrompt)
       circuitState.primary.failures = 0
-      return mapLLMResponse(response, emails)
+      _lastUsage = usage
+      return mapLLMResponse(parsed, emails)
     } catch (error) {
       circuitState.primary.failures++
       console.error(
@@ -188,9 +202,10 @@ export async function classifyWithLLM(
   if (fallbackProvider && Date.now() >= circuitState.fallback.openUntil) {
     try {
       console.log(`[LLM] Falling back to ${fallbackProvider.name}`)
-      const response = await callProviderWithRetry(fallbackProvider, userPrompt)
+      const { parsed, usage } = await callProviderWithRetry(fallbackProvider, userPrompt)
       circuitState.fallback.failures = 0
-      return mapLLMResponse(response, emails)
+      _lastUsage = usage
+      return mapLLMResponse(parsed, emails)
     } catch (error) {
       circuitState.fallback.failures++
       console.error(
@@ -206,6 +221,7 @@ export async function classifyWithLLM(
 
   // Both providers failed — return unknown for all
   console.warn('[LLM] All providers failed, returning unknown for all emails')
+  _lastUsage = null
   return emails.map((e) => ({
     emailId: e.id,
     category: 'unknown' as EmailCategory,
@@ -248,11 +264,16 @@ function mapLLMResponse(
   }))
 }
 
+interface ProviderResult {
+  parsed: z.infer<typeof LLMBatchResponseSchema>
+  usage: LLMUsage
+}
+
 async function callProviderWithRetry(
   provider: LLMProvider,
   userPrompt: string,
   maxRetries = 2
-): Promise<z.infer<typeof LLMBatchResponseSchema>> {
+): Promise<ProviderResult> {
   let lastError: Error | null = null
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -272,6 +293,18 @@ async function callProviderWithRetry(
       const rawContent = completion.choices[0]?.message?.content
       if (!rawContent) throw new Error('Empty LLM response')
 
+      // Track real token usage from API response
+      const inputTokens = completion.usage?.prompt_tokens ?? 0
+      const outputTokens = completion.usage?.completion_tokens ?? 0
+      const costUsd =
+        (inputTokens * provider.inputCostPerMToken +
+          outputTokens * provider.outputCostPerMToken) /
+        1_000_000
+
+      console.log(`[LLM:${provider.name}] Tokens: ${inputTokens} in + ${outputTokens} out = $${costUsd.toFixed(6)}`)
+
+      const usage: LLMUsage = { inputTokens, outputTokens, costUsd, provider: provider.name }
+
       // Try to parse, use jsonrepair if malformed
       let parsed: unknown
       try {
@@ -281,7 +314,7 @@ async function callProviderWithRetry(
         parsed = JSON.parse(repaired)
       }
 
-      return LLMBatchResponseSchema.parse(parsed)
+      return { parsed: LLMBatchResponseSchema.parse(parsed), usage }
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error))
 

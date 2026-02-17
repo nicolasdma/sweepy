@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 
 type ScanPhase = 'idle' | 'listing' | 'processing' | 'done' | 'error'
@@ -8,12 +8,52 @@ type ScanPhase = 'idle' | 'listing' | 'processing' | 'done' | 'error'
 const MAX_RETRIES = 3
 const RETRY_BACKOFF_MS = [1000, 3000, 8000]
 
+/**
+ * Smoothly animates a number from its current value to a target.
+ * Updates ~30fps, takes about 1.5s to reach the target.
+ */
+function useAnimatedNumber(target: number, duration = 1500): number {
+  const [display, setDisplay] = useState(0)
+  const rafRef = useRef<number>(0)
+  const startRef = useRef({ value: 0, time: 0, target: 0 })
+
+  useEffect(() => {
+    if (target === startRef.current.target) return
+
+    const startValue = display
+    startRef.current = { value: startValue, time: performance.now(), target }
+
+    const animate = (now: number) => {
+      const elapsed = now - startRef.current.time
+      const progress = Math.min(elapsed / duration, 1)
+      // Ease-out cubic
+      const eased = 1 - Math.pow(1 - progress, 3)
+      const current = Math.round(startRef.current.value + (target - startRef.current.value) * eased)
+
+      setDisplay(current)
+
+      if (progress < 1) {
+        rafRef.current = requestAnimationFrame(animate)
+      }
+    }
+
+    rafRef.current = requestAnimationFrame(animate)
+    return () => cancelAnimationFrame(rafRef.current)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target, duration])
+
+  return display
+}
+
 export function ScanButton({ compact = false }: { compact?: boolean }) {
   const [phase, setPhase] = useState<ScanPhase>('idle')
   const [error, setError] = useState<string | null>(null)
   const [progress, setProgress] = useState({ processed: 0, total: 0 })
   const abortRef = useRef(false)
   const router = useRouter()
+
+  const animatedProcessed = useAnimatedNumber(progress.processed)
+  const pct = progress.total > 0 ? Math.round((animatedProcessed / progress.total) * 100) : 0
 
   const processLoop = useCallback(async (scanId: string, totalIds: number, startOffset: number, skipCache: boolean) => {
     let offset = startOffset
@@ -33,7 +73,7 @@ export function ScanButton({ compact = false }: { compact?: boolean }) {
         }
 
         const data = await res.json()
-        retries = 0 // Reset retries on success
+        retries = 0
 
         setProgress({ processed: data.processedCount, total: totalIds })
 
@@ -86,7 +126,6 @@ export function ScanButton({ compact = false }: { compact?: boolean }) {
         return
       }
 
-      // Empty inbox
       if (data.phase === 'completed' || data.totalIds === 0) {
         setPhase('done')
         if (data.scanId) {
@@ -98,7 +137,6 @@ export function ScanButton({ compact = false }: { compact?: boolean }) {
       setProgress({ processed: 0, total: data.totalIds })
       setPhase('processing')
 
-      // Start the processing loop
       await processLoop(data.scanId, data.totalIds, 0, false)
     } catch (err) {
       setPhase('error')
@@ -106,7 +144,6 @@ export function ScanButton({ compact = false }: { compact?: boolean }) {
     }
   }
 
-  const pct = progress.total > 0 ? Math.round((progress.processed / progress.total) * 100) : 0
   const isActive = phase !== 'idle' && phase !== 'error'
 
   if (phase === 'idle' || phase === 'error') {
@@ -162,7 +199,6 @@ export function ScanButton({ compact = false }: { compact?: boolean }) {
   return (
     <div className="glass-card w-full rounded-xl p-6 animate-fade-in-up">
       <div className="flex items-center gap-4">
-        {/* Spinner */}
         <div className="relative flex h-11 w-11 items-center justify-center">
           {phase === 'done' ? (
             <div className="flex h-11 w-11 items-center justify-center rounded-full bg-emerald-500/10">
@@ -200,7 +236,7 @@ export function ScanButton({ compact = false }: { compact?: boolean }) {
           )}
           {progress.total > 0 && (
             <p className="mt-0.5 font-mono text-xs text-[#9898b0]">
-              {progress.processed.toLocaleString()} / {progress.total.toLocaleString()} emails
+              {animatedProcessed.toLocaleString()} / {progress.total.toLocaleString()} emails
             </p>
           )}
         </div>

@@ -1,7 +1,7 @@
 import type { MinimalEmailData } from '@shared/types/email'
 import type { CategorizationResult } from '@shared/types/categories'
 import { getSenderCategoriesBatch, setSenderCategoriesBatch } from './sender-cache'
-import { classifyWithLLM, estimateLLMCost } from './llm'
+import { classifyWithLLM, getLastLLMUsage } from './llm'
 
 const LLM_BATCH_SIZE = 20
 
@@ -11,6 +11,8 @@ export interface PipelineStats {
   resolvedByCache: number
   resolvedByLlm: number
   llmCostUsd: number
+  llmInputTokens: number
+  llmOutputTokens: number
 }
 
 export interface PipelineResult {
@@ -43,6 +45,8 @@ export async function categorizeEmails(
     resolvedByCache: 0,
     resolvedByLlm: 0,
     llmCostUsd: 0,
+    llmInputTokens: 0,
+    llmOutputTokens: 0,
   }
 
   console.log(`[Sweepy:Pipeline] Starting LLM-first categorization for ${emails.length} emails, userId: ${userId}`)
@@ -99,7 +103,14 @@ export async function categorizeEmails(
     const llmResults = await classifyWithLLM(batch)
     allResults.push(...llmResults)
     stats.resolvedByLlm += llmResults.length
-    stats.llmCostUsd += estimateLLMCost(batch.length)
+
+    // Track real token usage from API response
+    const usage = getLastLLMUsage()
+    if (usage) {
+      stats.llmCostUsd += usage.costUsd
+      stats.llmInputTokens += usage.inputTokens
+      stats.llmOutputTokens += usage.outputTokens
+    }
 
     // Report progress after each batch
     if (options?.onProgress) {

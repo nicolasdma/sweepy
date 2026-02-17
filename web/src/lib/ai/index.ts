@@ -8,5 +8,6 @@ export {
   DEV_NOTIFICATION_DOMAINS,
 } from './heuristics'
 export { getSenderCategory, setSenderCategory, invalidateSenderCache } from './sender-cache'
-export { classifyWithLLM, estimateLLMCost } from './llm'
+export { classifyWithLLM, estimateLLMCost, getLastLLMUsage } from './llm'
+export type { LLMUsage } from './llm'
 export { getSuggestedActions } from './suggested-actions'
