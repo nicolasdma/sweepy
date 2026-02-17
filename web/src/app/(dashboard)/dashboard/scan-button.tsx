@@ -1,85 +1,75 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 
-type ScanPhase = 'idle' | 'starting' | 'classifying' | 'done' | 'error'
+type ScanPhase = 'idle' | 'listing' | 'processing' | 'done' | 'error'
+
+const MAX_RETRIES = 3
+const RETRY_BACKOFF_MS = [1000, 3000, 8000]
 
 export function ScanButton({ compact = false }: { compact?: boolean }) {
   const [phase, setPhase] = useState<ScanPhase>('idle')
   const [error, setError] = useState<string | null>(null)
-  const [scanId, setScanId] = useState<string | null>(null)
-  const [progress, setProgress] = useState({ classified: 0, total: 0 })
-  const [pollWarning, setPollWarning] = useState<string | null>(null)
-  const pollCountRef = useRef(0)
-  const lastProgressRef = useRef(0)
+  const [progress, setProgress] = useState({ processed: 0, total: 0 })
+  const abortRef = useRef(false)
   const router = useRouter()
 
-  const pollProgress = useCallback(async (id: string) => {
-    pollCountRef.current++
+  const processLoop = useCallback(async (scanId: string, totalIds: number, startOffset: number, skipCache: boolean) => {
+    let offset = startOffset
+    let retries = 0
 
-    try {
-      const res = await fetch(`/api/v1/scan/${id}/status`)
-      if (!res.ok) return
-      const { scan } = await res.json()
+    while (offset < totalIds && !abortRef.current) {
+      try {
+        const res = await fetch(`/api/v1/scan/${scanId}/process`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ offset, skipCache }),
+        })
 
-      if (scan.status === 'completed') {
-        setPhase('done')
-        const total = scan.total_emails_scanned ?? 0
-        if (total > 0) setProgress({ classified: total, total })
-        setTimeout(() => router.push(`/scan/${id}`), 1200)
-        return
-      }
-      if (scan.status === 'failed') {
-        setPhase('error')
-        setError('Scan failed. Please try again.')
-        return
-      }
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}))
+          throw new Error(data.error || `HTTP ${res.status}`)
+        }
 
-      const classified = scan.resolved_by_llm ?? 0
-      const total = scan.total_emails_scanned ?? 0
-      if (total > 0) {
-        setPhase('classifying')
-        setProgress({ classified, total })
-      }
+        const data = await res.json()
+        retries = 0 // Reset retries on success
 
-      // Check for stale progress
-      const currentProgress = classified + total
-      if (currentProgress !== lastProgressRef.current) {
-        lastProgressRef.current = currentProgress
-        pollCountRef.current = 0 // Reset counter on progress
-        setPollWarning(null)
-      } else if (pollCountRef.current >= 150) {
-        // 5 minutes without progress — stop
-        setPhase('error')
-        setError('Scan appears to be stuck. Please try again.')
-        return
-      } else if (pollCountRef.current >= 30) {
-        // 60 seconds without progress — warn
-        setPollWarning('Scan is taking longer than expected...')
+        setProgress({ processed: data.processedCount, total: totalIds })
+
+        if (data.phase === 'completed') {
+          setPhase('done')
+          setTimeout(() => router.push(`/scan/${scanId}`), 1200)
+          return
+        }
+
+        if (data.phase === 'failed') {
+          setPhase('error')
+          setError('Scan failed during processing. Please try again.')
+          return
+        }
+
+        offset = data.nextOffset
+      } catch (err) {
+        retries++
+        if (retries > MAX_RETRIES) {
+          setPhase('error')
+          setError(err instanceof Error ? err.message : 'Processing failed after retries')
+          return
+        }
+        console.warn(`[Sweepy:ScanButton] Retry ${retries}/${MAX_RETRIES}:`, err)
+        await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS[retries - 1] || 8000))
       }
-    } catch {
-      // Ignore polling errors
     }
   }, [router])
-
-  useEffect(() => {
-    if ((phase !== 'starting' && phase !== 'classifying') || !scanId) return
-    const interval = setInterval(() => pollProgress(scanId), 2000)
-    // Poll immediately on mount
-    pollProgress(scanId)
-    return () => clearInterval(interval)
-  }, [phase, scanId, pollProgress])
 
   async function handleScan() {
     if (phase !== 'idle' && phase !== 'error') return
 
-    setPhase('starting')
+    abortRef.current = false
+    setPhase('listing')
     setError(null)
-    setPollWarning(null)
-    setProgress({ classified: 0, total: 0 })
-    pollCountRef.current = 0
-    lastProgressRef.current = 0
+    setProgress({ processed: 0, total: 0 })
 
     try {
       const res = await fetch('/api/v1/scan', {
@@ -92,19 +82,31 @@ export function ScanButton({ compact = false }: { compact?: boolean }) {
 
       if (!res.ok) {
         setPhase('error')
-        setError(data.error || 'Scan failed')
+        setError(data.error || 'Failed to start scan')
         return
       }
 
-      // Scan started — set ID to trigger polling
-      setScanId(data.scanId)
+      // Empty inbox
+      if (data.phase === 'completed' || data.totalIds === 0) {
+        setPhase('done')
+        if (data.scanId) {
+          setTimeout(() => router.push(`/scan/${data.scanId}`), 1200)
+        }
+        return
+      }
+
+      setProgress({ processed: 0, total: data.totalIds })
+      setPhase('processing')
+
+      // Start the processing loop
+      await processLoop(data.scanId, data.totalIds, 0, false)
     } catch (err) {
       setPhase('error')
       setError(err instanceof Error ? err.message : 'Something went wrong')
     }
   }
 
-  const pct = progress.total > 0 ? Math.round((progress.classified / progress.total) * 100) : 0
+  const pct = progress.total > 0 ? Math.round((progress.processed / progress.total) * 100) : 0
   const isActive = phase !== 'idle' && phase !== 'error'
 
   if (phase === 'idle' || phase === 'error') {
@@ -189,16 +191,16 @@ export function ScanButton({ compact = false }: { compact?: boolean }) {
 
         <div className="flex-1">
           <p className="text-sm font-semibold text-[#0f0f23]">
-            {phase === 'starting' && 'Fetching emails from Gmail...'}
-            {phase === 'classifying' && 'Classifying with AI...'}
+            {phase === 'listing' && 'Fetching email list from Gmail...'}
+            {phase === 'processing' && 'Classifying with AI...'}
             {phase === 'done' && 'Done! Redirecting...'}
           </p>
-          {phase === 'starting' && progress.total === 0 && (
+          {phase === 'listing' && (
             <p className="mt-0.5 text-xs text-[#9898b0]">This may take a moment</p>
           )}
           {progress.total > 0 && (
             <p className="mt-0.5 font-mono text-xs text-[#9898b0]">
-              {progress.classified.toLocaleString()} / {progress.total.toLocaleString()} emails
+              {progress.processed.toLocaleString()} / {progress.total.toLocaleString()} emails
             </p>
           )}
         </div>
@@ -220,22 +222,12 @@ export function ScanButton({ compact = false }: { compact?: boolean }) {
         </div>
       )}
 
-      {/* Pulse indicator for starting phase */}
-      {phase === 'starting' && progress.total === 0 && (
+      {/* Pulse indicator for listing phase */}
+      {phase === 'listing' && (
         <div className="mt-4">
           <div className="h-2 w-full overflow-hidden rounded-full bg-black/[0.04]">
             <div className="h-full w-1/3 rounded-full bg-gradient-to-r from-indigo-500/60 to-purple-500/60 animate-pulse" />
           </div>
-        </div>
-      )}
-
-      {/* Poll warning */}
-      {pollWarning && (
-        <div className="mt-3 flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-2">
-          <svg className="h-4 w-4 text-amber-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
-          </svg>
-          <p className="text-xs text-amber-700">{pollWarning}</p>
         </div>
       )}
     </div>

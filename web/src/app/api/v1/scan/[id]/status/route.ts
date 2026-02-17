@@ -19,7 +19,7 @@ export async function GET(
   const { data: scan, error } = await supabase
     .from('email_scans')
     .select(
-      'id, status, total_emails_scanned, category_counts, resolved_by_heuristic, resolved_by_cache, resolved_by_llm, llm_cost_usd, created_at, completed_at'
+      'id, status, total_emails_scanned, category_counts, resolved_by_heuristic, resolved_by_cache, resolved_by_llm, llm_cost_usd, created_at, completed_at, processed_count, total_ids, scan_phase'
     )
     .eq('id', id)
     .eq('user_id', auth.userId)
